@@ -653,14 +653,31 @@ app.post('/api/creative-director-chat', async (req, res) => {
     Be direct, high-stakes, and elite.` : 'Chat with them like a partner. Act as their "Structural Arbitrage" expert. Bridge the analyzed DNA to whatever product they mention.'}
     `;
 
-    const completion = await groq.chat.completions.create({
-      messages: [
-        { role: "system", content: systemPrompt },
-        ...(messages || [])
-      ],
-      model: "llama-3.3-70b-versatile",
-      temperature: 0.7,
-    }, { timeout: 60000 }); // 60s timeout
+    let completion;
+    const MAX_RETRIES = 3;
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        console.log(`💬 Generating script (attempt ${attempt}/${MAX_RETRIES})...`);
+        completion = await groq.chat.completions.create({
+          messages: [
+            { role: "system", content: systemPrompt },
+            ...(messages || [])
+          ],
+          model: "llama-3.3-70b-versatile",
+          temperature: 0.7,
+        }, { timeout: 60000 });
+        break; // Success — exit retry loop
+      } catch (err) {
+        const isNetworkError = ['ETIMEDOUT', 'ECONNRESET', 'ENOTFOUND'].includes(err.cause?.code);
+        console.warn(`⚠️ Chat attempt ${attempt} failed: ${err.message}`);
+        if (attempt < MAX_RETRIES && isNetworkError) {
+          console.log(`🔄 Retrying in 2s...`);
+          await new Promise(r => setTimeout(r, 2000));
+        } else {
+          throw err;
+        }
+      }
+    }
 
     res.json({ message: completion.choices[0]?.message?.content });
   } catch (error) {

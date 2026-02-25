@@ -12,25 +12,35 @@ async function transcribeAudio(audioPath) {
     }
 
     const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+    const MAX_RETRIES = 3;
 
-    try {
-        console.log('🎙️ Initiating Groq Whisper Transcription...');
-        const transcription = await groq.audio.transcriptions.create({
-            file: fs.createReadStream(audioPath),
-            model: "whisper-large-v3-turbo",
-            response_format: "json",
-            temperature: 0.0,
-        });
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+        try {
+            console.log(`🎙️ Groq Whisper Transcription (attempt ${attempt}/${MAX_RETRIES})...`);
+            const transcription = await groq.audio.transcriptions.create({
+                file: fs.createReadStream(audioPath),
+                model: "whisper-large-v3-turbo",
+                response_format: "json",
+                temperature: 0.0,
+            });
 
-        // Cleanup audio file after transcription
-        if (fs.existsSync(audioPath)) fs.unlinkSync(audioPath);
+            // Cleanup audio file after transcription
+            if (fs.existsSync(audioPath)) fs.unlinkSync(audioPath);
+            return transcription.text;
 
-        return transcription.text;
-    } catch (error) {
-        console.error('Groq Transcription error:', error);
-        // Cleanup if error
-        if (fs.existsSync(audioPath)) fs.unlinkSync(audioPath);
-        throw new Error(`Audio transcription failed: ${error.message}`);
+        } catch (error) {
+            const isNetworkError = ['ETIMEDOUT', 'ECONNRESET', 'ENOTFOUND'].includes(error.cause?.code);
+            console.warn(`⚠️ Transcription attempt ${attempt} failed: ${error.message}`);
+
+            if (attempt < MAX_RETRIES && isNetworkError) {
+                console.log(`🔄 Retrying in 2s...`);
+                await new Promise(r => setTimeout(r, 2000));
+            } else {
+                // Cleanup if all attempts failed
+                if (fs.existsSync(audioPath)) fs.unlinkSync(audioPath);
+                throw new Error(`Audio transcription failed after ${MAX_RETRIES} attempts: ${error.message}`);
+            }
+        }
     }
 }
 
