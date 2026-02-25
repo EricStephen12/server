@@ -20,7 +20,12 @@ const port = process.env.PORT || 4000;
 const upload = multer({ dest: 'uploads/' });
 
 // Middleware
-app.use(cors());
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+app.options('*', cors()); // Handle preflight requests
 app.use(express.json());
 
 // Supabase Connection
