@@ -1,10 +1,8 @@
 const ffmpeg = require('fluent-ffmpeg');
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
-const ytdl = require('@distube/ytdl-core');
-const https = require('https');
-const http = require('http');
+const { execSync, exec } = require('child_process');
+const axios = require('axios');
 
 // Try to find ffmpeg path
 try {
@@ -25,32 +23,89 @@ try {
 }
 
 /**
- * Downloads a video from a direct URL to a local file path.
+ * Downloads a file from a URL using axios (handles redirects, large files).
  */
-function downloadDirect(url, destPath) {
+async function downloadDirect(url, destPath) {
+    const response = await axios({
+        method: 'get',
+        url,
+        responseType: 'stream',
+        timeout: 60000,
+        headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+    });
+    const writer = fs.createWriteStream(destPath);
+    response.data.pipe(writer);
     return new Promise((resolve, reject) => {
-        const protocol = url.startsWith('https') ? https : http;
-        const file = fs.createWriteStream(destPath);
-        protocol.get(url, (response) => {
-            if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
-                // Follow redirect
-                return downloadDirect(response.headers.location, destPath).then(resolve).catch(reject);
+        writer.on('finish', resolve);
+        writer.on('error', reject);
+    });
+}
+
+/**
+ * Resolve a TikTok URL to a direct video download link via tikwm.com API.
+ * Pure HTTP — no binaries or Python needed. Works on any server.
+ */
+async function resolveTikTokUrl(url) {
+    console.log('⚡ Resolving TikTok video via API...');
+    try {
+        const response = await axios({
+            method: 'post',
+            url: 'https://www.tikwm.com/api/',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            },
+            data: `url=${encodeURIComponent(url)}&hd=1`
+        });
+
+        const data = response.data;
+        if (data && data.code === 0 && data.data) {
+            // Prefer HD, fallback to regular
+            const videoUrl = data.data.hdplay || data.data.play;
+            if (videoUrl) {
+                console.log('✅ TikTok video URL resolved');
+                return videoUrl;
             }
-            if (response.statusCode !== 200) {
-                return reject(new Error(`Failed to download video: HTTP ${response.statusCode}`));
+        }
+        throw new Error('tikwm API returned no video URL');
+    } catch (err) {
+        console.warn('⚠️ tikwm API failed:', err.message);
+        // Fallback: try yt-dlp CLI if available
+        try {
+            const ytdlpPath = execSync('which yt-dlp', { encoding: 'utf-8' }).trim();
+            if (ytdlpPath) {
+                console.log('⚡ Falling back to yt-dlp CLI...');
+                return null; // signal to use yt-dlp directly
             }
-            response.pipe(file);
-            file.on('finish', () => file.close(resolve));
-        }).on('error', (err) => {
-            fs.unlink(destPath, () => { });
-            reject(err);
+        } catch (_) {}
+        throw new Error(`Could not resolve TikTok video: ${err.message}`);
+    }
+}
+
+/**
+ * Download a video using yt-dlp CLI (fallback for local dev).
+ */
+async function downloadWithYtDlp(url, destPath) {
+    console.log('⚡ Downloading video with yt-dlp...');
+    return new Promise((resolve, reject) => {
+        const cmd = `yt-dlp -o "${destPath}" --no-playlist --merge-output-format mp4 "${url}"`;
+        exec(cmd, { timeout: 120000 }, (error, stdout, stderr) => {
+            if (error) {
+                console.error('yt-dlp stderr:', stderr);
+                reject(new Error(`yt-dlp failed: ${error.message}`));
+            } else {
+                console.log('✅ yt-dlp download complete');
+                resolve();
+            }
         });
     });
 }
 
 /**
  * Extract frames from a video URL at specific timestamps.
- * Supports TikTok (via @distube/ytdl-core) and direct mp4 URLs.
+ * Supports TikTok URLs and direct mp4 URLs.
  */
 async function extractFrames(videoUrl, manualTimestamps = null) {
     const tempDir = path.join(__dirname, '../temp');
@@ -65,24 +120,15 @@ async function extractFrames(videoUrl, manualTimestamps = null) {
         const isTikTok = videoUrl.includes('tiktok.com');
 
         if (isTikTok) {
-            // Use @distube/ytdl-core for TikTok
-            console.log('⚡ Downloading TikTok video via ytdl-core...');
-            const info = await ytdl.getInfo(videoUrl);
-            const format = ytdl.chooseFormat(info.formats, { quality: 'highest', filter: 'videoandaudio' })
-                || ytdl.chooseFormat(info.formats, { filter: 'videoandaudio' });
-
-            if (!format) throw new Error('No suitable video format found for TikTok URL.');
-
-            await new Promise((resolve, reject) => {
-                const stream = ytdl.downloadFromInfo(info, { format });
-                const file = fs.createWriteStream(videoPath);
-                stream.pipe(file);
-                stream.on('error', reject);
-                file.on('finish', resolve);
-                file.on('error', reject);
-            });
+            const directUrl = await resolveTikTokUrl(videoUrl);
+            if (directUrl) {
+                console.log('⚡ Downloading TikTok video...');
+                await downloadDirect(directUrl, videoPath);
+            } else {
+                // Fallback to yt-dlp CLI
+                await downloadWithYtDlp(videoUrl, videoPath);
+            }
         } else {
-            // Direct URL download (mp4 links, etc.)
             console.log('⚡ Downloading video from direct URL...');
             await downloadDirect(videoUrl, videoPath);
         }
