@@ -1,9 +1,10 @@
 const ffmpeg = require('fluent-ffmpeg');
 const fs = require('fs');
 const path = require('path');
-const { execSync, exec } = require('child_process');
-const util = require('util');
-const execPromise = util.promisify(exec);
+const { execSync } = require('child_process');
+const ytdl = require('@distube/ytdl-core');
+const https = require('https');
+const http = require('http');
 
 // Try to find ffmpeg path
 try {
@@ -24,10 +25,32 @@ try {
 }
 
 /**
- * Extract frames from a video URL at specific timestamps
- * @param {string} videoUrl - URL of the video to extract frames from
- * @param {number[]} timestamps - Array of timestamps in seconds
- * @returns {Promise<string[]>} - Array of base64-encoded frame images
+ * Downloads a video from a direct URL to a local file path.
+ */
+function downloadDirect(url, destPath) {
+    return new Promise((resolve, reject) => {
+        const protocol = url.startsWith('https') ? https : http;
+        const file = fs.createWriteStream(destPath);
+        protocol.get(url, (response) => {
+            if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
+                // Follow redirect
+                return downloadDirect(response.headers.location, destPath).then(resolve).catch(reject);
+            }
+            if (response.statusCode !== 200) {
+                return reject(new Error(`Failed to download video: HTTP ${response.statusCode}`));
+            }
+            response.pipe(file);
+            file.on('finish', () => file.close(resolve));
+        }).on('error', (err) => {
+            fs.unlink(destPath, () => { });
+            reject(err);
+        });
+    });
+}
+
+/**
+ * Extract frames from a video URL at specific timestamps.
+ * Supports TikTok (via @distube/ytdl-core) and direct mp4 URLs.
  */
 async function extractFrames(videoUrl, manualTimestamps = null) {
     const tempDir = path.join(__dirname, '../temp');
@@ -39,21 +62,41 @@ async function extractFrames(videoUrl, manualTimestamps = null) {
     try {
         console.log(`🎥 Initiating Elite Extraction for: ${videoUrl}`);
 
-        const ytdlCommand = `yt-dlp -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" --no-check-certificates --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" -o "${videoPath}" "${videoUrl}"`;
+        const isTikTok = videoUrl.includes('tiktok.com');
 
-        console.log('⚡ Scraping TikTok Video DNA...');
-        await execPromise(ytdlCommand);
+        if (isTikTok) {
+            // Use @distube/ytdl-core for TikTok
+            console.log('⚡ Downloading TikTok video via ytdl-core...');
+            const info = await ytdl.getInfo(videoUrl);
+            const format = ytdl.chooseFormat(info.formats, { quality: 'highest', filter: 'videoandaudio' })
+                || ytdl.chooseFormat(info.formats, { filter: 'videoandaudio' });
+
+            if (!format) throw new Error('No suitable video format found for TikTok URL.');
+
+            await new Promise((resolve, reject) => {
+                const stream = ytdl.downloadFromInfo(info, { format });
+                const file = fs.createWriteStream(videoPath);
+                stream.pipe(file);
+                stream.on('error', reject);
+                file.on('finish', resolve);
+                file.on('error', reject);
+            });
+        } else {
+            // Direct URL download (mp4 links, etc.)
+            console.log('⚡ Downloading video from direct URL...');
+            await downloadDirect(videoUrl, videoPath);
+        }
 
         if (!fs.existsSync(videoPath)) {
-            throw new Error('yt-dlp failed to create a video file.');
+            throw new Error('Video download failed — file not created.');
         }
 
         const stats = fs.statSync(videoPath);
         console.log(`✅ DNA Downloaded: ${(stats.size / 1024 / 1024).toFixed(2)} MB`);
 
-        // Get Metadata (Duration)
-        const getMetadata = (path) => new Promise((resolve, reject) => {
-            ffmpeg.ffprobe(path, (err, metadata) => {
+        // Get metadata (duration)
+        const getMetadata = (filePath) => new Promise((resolve, reject) => {
+            ffmpeg.ffprobe(filePath, (err, metadata) => {
                 if (err) reject(err);
                 else resolve(metadata);
             });
@@ -62,8 +105,7 @@ async function extractFrames(videoUrl, manualTimestamps = null) {
         const metadata = await getMetadata(videoPath);
         const duration = metadata.format.duration || 30;
 
-        // Dynamic Sampling: Stay inside Groq's 5-image limit
-        // We prioritize the Hook (0, 2s) and then spread the rest
+        // Dynamic sampling: stay inside 5-frame limit
         let timestamps = manualTimestamps;
         if (!timestamps) {
             timestamps = [
@@ -73,8 +115,6 @@ async function extractFrames(videoUrl, manualTimestamps = null) {
                 duration * 0.5,
                 duration * 0.9
             ].map(t => Math.floor(t));
-
-            // Deduplicate and filter (just in case video is < 5s)
             timestamps = [...new Set(timestamps)].filter(t => t < duration).slice(0, 5);
         }
 
@@ -116,7 +156,7 @@ async function extractFrames(videoUrl, manualTimestamps = null) {
 
         console.log(`🎨 Extracted ${frames.length} DNA samples successfully`);
 
-        // Extract Audio for Transcription
+        // Extract audio for transcription
         const audioPath = path.join(tempDir, `audio_${videoId}.mp3`);
         console.log('🎵 Extracting Audio DNA...');
         await new Promise((resolve, reject) => {
