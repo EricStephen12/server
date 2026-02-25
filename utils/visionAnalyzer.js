@@ -1,116 +1,109 @@
-const { GoogleGenerativeAI } = require('@google/generative-ai');
+const Groq = require('groq-sdk');
 
 /**
- * Analyze video frames using Gemini Vision API
+ * Analyze video frames using Groq Vision API (Llama 3.2 Multimodal)
  * @param {Array} frames - Array of frame objects with {timestamp, base64, mimeType}
  * @param {string} productContext - Context about the product being advertised
  * @returns {Promise<Object>} - Detailed visual analysis
  */
-async function analyzeVideoFrames(frames, productContext = '') {
-    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+async function analyzeVideoFrames(frames, productContext = '', transcript = '') {
+  if (!process.env.GROQ_API_KEY) {
+    throw new Error('Groq API Key is missing for Vision Analysis');
+  }
 
-    // Prepare image parts for Gemini Vision
-    const imageParts = frames.map(frame => ({
-        inlineData: {
-            data: frame.base64,
-            mimeType: frame.mimeType
-        }
-    }));
+  const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
-    const prompt = `You are analyzing a TikTok ad video frame-by-frame. 
+  // Prepare contents for Groq Multimodal
+  const messages = [
+    {
+      role: 'user',
+      content: [
+        {
+          type: 'text',
+          text: `You are an Elite Direct-Response Creative Director analyzing a TikTok ad. 
 ${productContext ? `Product Context: ${productContext}` : ''}
+${transcript ? `SPOKEN TRANSCRIPT (AUDIO DNA): "${transcript}"` : 'No audio transcript detected.'}
 
-I'm providing you with ${frames.length} frames extracted at these timestamps: ${frames.map(f => f.timestamp + 's').join(', ')}.
+I'm providing you with ${frames.length} frames extracted across the video.
 
-Analyze the visual structure of this ad and provide a detailed breakdown:
+Analyze the visual structure AND how it aligns with the spoken script:
 
-1. **Hook (0-3s)**: What's happening in the opening? Describe:
-   - Exact visual composition (what's in frame, camera angle)
-   - Subject's actions and facial expressions
-   - Camera work (handheld, static, movement type)
-   - Energy level and pacing
-   - Any text overlays or graphics
+1. **Eugene Schwartz's Level of Awareness**: Identify which level this ad targets.
+2. **Ogilvy's "Big Idea"**: What is the core concept?
+3. **Hook Power (0-3s)**: Grade the stop-rate potential (1-10) of both the visual hook and the spoken hook.
+4. **Retention Score**: Grade the frame-by-frame pacing and audio/visual synergy.
+5. **Conversion Trigger**: Grade the strength of the CTA and offer logic.
+6. **The Vibe**: Is it "Guerilla UGC" or "High-Production"? How does the audio tone match the visuals?
 
-2. **Problem Scene (3-8s)**: How is the problem presented visually?
-   - Visual storytelling approach
-   - Facial expressions and body language
-   - Scene transitions
-   - Visual metaphors used
-
-3. **Solution Scene (8-15s)**: How is the product/solution shown?
-   - Product demonstration style
-   - Camera focus and framing
-   - Visual proof elements
-   - Pacing and energy shift
-
-4. **CTA Scene (15s+)**: How does it close?
-   - Final visual
-   - Call-to-action presentation
-   - Closing energy
-
-5. **Overall Style**:
-   - Lighting style (natural, studio, moody, bright)
-   - Color palette and mood
-   - Editing pace (fast cuts, slow transitions)
-   - Camera work consistency
-
-Output as JSON with this structure:
+Output as JSON with this EXACT structure:
 {
+  "metrics": {
+    "hook_power": 8.5,
+    "retention_score": 7.2,
+    "conversion_trigger": 9.0
+  },
+  "niche": "...",
+  "awareness_level": "Problem-Aware",
+  "big_idea": "...",
+  "vibe_assessment": {
+    "style": "Guerilla UGC",
+    "emotional_arc": "...",
+    "critique": "..."
+  },
   "hook_analysis": {
-    "visual_description": "...",
-    "camera_work": "...",
-    "subject_action": "...",
-    "energy_level": "...",
-    "text_overlays": "..."
+    "critique": "...",
+    "suggestion": "..."
   },
-  "problem_scene": {
-    "visual_approach": "...",
-    "transitions": "...",
-    "emotional_cues": "..."
+  "pacing_analysis": {
+    "critique": "..."
   },
-  "solution_scene": {
-    "product_demo_style": "...",
-    "visual_proof": "...",
-    "pacing": "..."
+  "cta_analysis": {
+    "critique": "..."
   },
-  "cta_scene": {
-    "closing_visual": "...",
-    "cta_presentation": "..."
+  "psychology_breakdown": {
+    "trigger": "...",
+    "explanation": "..."
   },
-  "overall_style": {
-    "lighting": "...",
-    "color_palette": "...",
-    "editing_pace": "...",
-    "camera_consistency": "..."
-  },
+  "viral_checklist": [
+    { "label": "Pattern Interrupt", "passed": true },
+    { "label": "Big Idea Present", "passed": true },
+    { "label": "Awareness Sync", "passed": true },
+    { "label": "Strong CTA", "passed": false }
+  ],
   "actionable_directions": [
-    "Specific direction 1 for recreating this ad",
-    "Specific direction 2...",
-    "..."
+    "Tip 1...",
+    "Tip 2..."
   ]
-}`;
-
-    try {
-        const result = await model.generateContent([prompt, ...imageParts]);
-        const response = await result.response;
-        const text = response.text();
-
-        // Extract JSON from response (handle markdown code blocks)
-        let jsonText = text;
-        if (text.includes('```json')) {
-            jsonText = text.split('```json')[1].split('```')[0].trim();
-        } else if (text.includes('```')) {
-            jsonText = text.split('```')[1].split('```')[0].trim();
-        }
-
-        const analysis = JSON.parse(jsonText);
-        return analysis;
-
-    } catch (error) {
-        console.error('Gemini Vision analysis error:', error);
-        throw new Error(`Video analysis failed: ${error.message}`);
+}
+`
+        },
+        ...frames.map(frame => ({
+          type: 'image_url',
+          image_url: {
+            url: `data:${frame.mimeType};base64,${frame.base64}`
+          }
+        }))
+      ]
     }
+  ];
+
+  try {
+    const completion = await groq.chat.completions.create({
+      messages,
+      model: 'meta-llama/llama-4-scout-17b-16e-instruct',
+      response_format: { type: 'json_object' },
+      temperature: 0.2,
+    });
+
+    const responseText = completion.choices[0]?.message?.content;
+    if (!responseText) throw new Error('Empty response from Groq Vision');
+
+    return JSON.parse(responseText);
+
+  } catch (error) {
+    console.error('Groq Vision analysis error:', error);
+    throw new Error(`Video analysis failed: ${error.message}`);
+  }
 }
 
 module.exports = { analyzeVideoFrames };

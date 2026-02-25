@@ -4,13 +4,20 @@ const dotenv = require('dotenv');
 const { createClient } = require('@supabase/supabase-js');
 const Groq = require('groq-sdk');
 const { GoogleGenerativeAI } = require("@google/generative-ai");
+const { GoogleAIFileManager } = require("@google/generative-ai/server");
+const multer = require('multer');
+const { ApifyClient } = require('apify-client');
 const { extractFrames } = require('./utils/frameExtractor');
 const { analyzeVideoFrames } = require('./utils/visionAnalyzer');
+const { transcribeAudio } = require('./utils/audioTranscriber');
 
 dotenv.config();
 
 const app = express();
 const port = process.env.PORT || 4000;
+
+// Multer for file uploads
+const upload = multer({ dest: 'uploads/' });
 
 // Middleware
 app.use(cors());
@@ -18,9 +25,8 @@ app.use(express.json());
 
 // Supabase Connection
 const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_ANON_KEY;
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
 
-// Initialize Supabase only if valid URL is provided
 let supabase;
 try {
   if (supabaseUrl && supabaseUrl.startsWith('http')) {
@@ -54,34 +60,8 @@ app.get('/health', async (req, res) => {
     timestamp: new Date(),
     message: 'Server is running.',
     groq_configured: !!groq,
-    gemini_configured: !!genAI
+    gemini_configured: false // Gemini is no longer used
   });
-});
-
-// Proxy Pollinations Image Generation (Securely with Secret Key)
-app.get('/api/generate-image', async (req, res) => {
-  const { prompt, seed } = req.query;
-  if (!prompt) return res.status(400).send('Prompt required');
-
-  const apiKey = process.env.POLLINATIONS_API_KEY;
-  const s = seed || Math.floor(Math.random() * 1000000);
-  const pollinationsUrl = `https://gen.pollinations.ai/image/${encodeURIComponent(prompt)}?model=nanobanana&width=1024&height=1024&seed=${s}&nologo=true&key=${apiKey}`;
-
-  try {
-    console.log(`🎨 Proxying Nano Banana: "${prompt.substring(0, 50)}..."`);
-    const response = await fetch(pollinationsUrl);
-
-    if (!response.ok) {
-      throw new Error(`Pollinations API error: ${response.status}`);
-    }
-
-    const buffer = await response.arrayBuffer();
-    res.set('Content-Type', 'image/jpeg');
-    res.send(Buffer.from(buffer));
-  } catch (err) {
-    console.error('Pollinations Proxy Failed:', err.message);
-    res.status(500).send('Image generation failed');
-  }
 });
 
 // Private Vault - Save analyzed video to user collection
@@ -160,40 +140,105 @@ app.get('/api/user-ads', async (req, res) => {
   }
 });
 
-// STANDALONE VIDEO ANALYSIS ENDPOINT
-app.post('/api/analyze-video', async (req, res) => {
-  const { videoUrl, productName, description } = req.body;
+// STANDALONE VIDEO ANALYSIS ENDPOINT (URL Based)
+app.post('/api/analyze-video-url', async (req, res) => {
+  const { videoUrl, userId } = req.body;
 
   if (!videoUrl) {
     return res.status(400).json({ error: 'Video URL is required' });
   }
 
-  if (!process.env.GEMINI_API_KEY) {
-    return res.status(503).json({ error: 'Gemini API not configured' });
+  if (!process.env.GROQ_API_KEY) {
+    return res.status(503).json({ error: 'Groq API not configured' });
   }
 
   try {
-    console.log('🎥 Extracting frames from video...');
-    const frames = await extractFrames(videoUrl);
+    console.log('🎥 Locating Viral DNA from URL...');
+    const { frames, audioPath } = await extractFrames(videoUrl);
 
-    console.log('🔍 Analyzing frames with Gemini Vision...');
-    const productContext = productName && description
-      ? `Product: ${productName} - ${description}`
-      : '';
+    if (!frames || frames.length === 0) {
+      throw new Error('No frames could be extracted from this URL.');
+    }
 
-    const analysis = await analyzeVideoFrames(frames, productContext);
+    // Transcription in parallel or sequence
+    let transcript = "";
+    if (audioPath) {
+      try {
+        transcript = await transcribeAudio(audioPath);
+        console.log('🎙️ Transcript Extracted:', transcript.substring(0, 50) + '...');
+      } catch (err) {
+        console.warn('⚠️ Transcription failed, proceeding with vision only:', err.message);
+      }
+    }
 
-    console.log('✅ Video analysis complete');
+    console.log('🧠 Analyzing Multi-Modal Masterclass Psychology...');
+    const analysis = await analyzeVideoFrames(frames, `Analysis of: ${videoUrl}`, transcript);
+
+    // Fuse transcript into analysis for the chat context
+    analysis.transcript = transcript;
+
+    console.log('✅ Masterclass DNA Extraction Complete');
     res.json({
       success: true,
       analysis,
-      framesAnalyzed: frames.length
+      framesAnalyzed: frames.length,
+      hasAudio: !!transcript
+    });
+
+  } catch (error) {
+    console.error('Video URL analysis error:', error);
+    res.status(500).json({
+      error: 'Failed to extract DNA from URL',
+      details: error.message
+    });
+  }
+});
+
+app.post('/api/analyze-video', upload.single('video'), async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: 'No video file provided' });
+  }
+
+  if (!process.env.GROQ_API_KEY) {
+    return res.status(503).json({ error: 'Groq API not configured' });
+  }
+
+  try {
+    console.log('🎥 Extracting DNA from draft...');
+    const { frames, audioPath } = await extractFrames(req.file.path);
+
+    if (!frames || frames.length === 0) {
+      throw new Error('No frames could be extracted from this video.');
+    }
+
+    // Transcription
+    let transcript = "";
+    if (audioPath) {
+      try {
+        transcript = await transcribeAudio(audioPath);
+        console.log('🎙️ Transcript Extracted:', transcript.substring(0, 50) + '...');
+      } catch (err) {
+        console.warn('⚠️ Transcription failed:', err.message);
+      }
+    }
+
+    console.log('🧠 Auditing Multi-Modal Mastery...');
+    const analysis = await analyzeVideoFrames(frames, 'Uploaded Draft Analysis', transcript);
+
+    // Fuse
+    analysis.transcript = transcript;
+
+    res.json({
+      success: true,
+      analysis,
+      framesAnalyzed: frames.length,
+      hasAudio: !!transcript
     });
 
   } catch (error) {
     console.error('Video analysis error:', error);
     res.status(500).json({
-      error: 'Video analysis failed',
+      error: 'Video audit failed',
       details: error.message
     });
   }
@@ -570,377 +615,196 @@ app.post('/api/script-strategy-questions', async (req, res) => {
   }
 });
 
-// Google Gemini Connection (For Vision/Images)
-let genAI;
-try {
-  if (process.env.GEMINI_API_KEY) {
-    genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-  } else {
-    console.warn('WARNING: GEMINI_API_KEY is missing in .env file');
-  }
-} catch (err) {
-  console.warn('Gemini initialization failed:', err.message);
-}
 
-app.post('/api/generate-content', async (req, res) => {
-  const { productName, description, imageBase64 } = req.body;
+// Creative Director Chat Loop
+app.post('/api/creative-director-chat', async (req, res) => {
+  const { messages, dna, isRoastMode } = req.body;
 
-  if (!productName || !description) {
-    return res.status(400).json({ error: 'Product name and description default required' });
-  }
-
-  // Clean base64 string if needed
-  const imagePart = imageBase64 ? {
-    inlineData: {
-      data: imageBase64.split(',')[1] || imageBase64,
-      mimeType: "image/jpeg",
-    },
-  } : null;
+  if (!groq) return res.status(503).json({ error: 'AI service not available' });
 
   try {
-    let aiData = {};
+    const isIntro = !messages || messages.length === 0;
 
-    if (imageBase64 && genAI) {
-      console.log("🔮 Using Google Gemini Vision to analyze image...");
-      try {
-        const models = ["gemini-flash-latest", "gemini-1.5-flash"];
-        let result;
-        for (const m of models) {
-          try {
-            console.log(`Trying model: ${m}...`);
-            const model = genAI.getGenerativeModel({ model: m });
-            result = await model.generateContent([`
-              Analyze this product photo for high-end social media marketing.
-              Product: ${productName}
-              Description: ${description}
-              
-              Return ONLY valid JSON:
-              {
-                "pinterest_title": "string",
-                "instagram_caption": "string with emojis",
-                "hashtags": ["string"],
-                "color_palette": ["hex"],
-                "aesthetic_score": number 1-10
-              }
-            `, imagePart]);
-            if (result) break;
-          } catch (e) {
-            console.warn(`Model ${m} failed: ${e.message}`);
-          }
-        }
+    const systemPrompt = `You are an Elite Creative Director & Growth Partner. 
+    You have just PERSONALLY deconstructed the video frames and analyzed the psychological DNA. 
+    We are in a private "Lounge Session." You aren't an AI; you're a mentor who has built 8-figure brands.
+    
+    ${isRoastMode ? 'YOUR PERSONA: ROAST MODE. Be direct, ruthless, and bored of excuses. If the ad is bad, say it. If the hook is weak, kill it. No sugar-coating.' : 'YOUR PERSONA: Sophisticated Partner. Direct but collaborative. Ambitious and insightful.'}
 
-        if (result) {
-          const text = result.response.text().replace(/```json/g, '').replace(/```/g, '').trim();
-          aiData = JSON.parse(text);
-        } else {
-          throw new Error("No Gemini models available for vision analysis.");
-        }
-      } catch (geminiError) {
-        console.error("Gemini failed, falling back to text analysis:", geminiError.message);
-        aiData = {
-          pinterest_title: `${productName} Moodboard`,
-          instagram_caption: `Discover the elegance of ${productName}. ✨`,
-          hashtags: ["aesthetic", "musthave", "trending"],
-          color_palette: ["#1a1a1a", "#f5f5f5", "#d4d4d4"],
-          aesthetic_score: 9.5
-        };
-      }
-
-    } else if (groq) {
-      console.log("⚡ Using Groq (Text Only) for content...");
-      const prompt = `
-            Generate social media content for:
-            Product: ${productName} - ${description}
-            
-            Return JSON with:
-            - pinterest_title (catchy)
-            - instagram_caption (viral style with emojis)
-            - hashtags (5-10, string array)
-            - color_palette (suggest 3 aesthetic hex codes, string array)
-            - aesthetic_score (1-10 number)
-         `;
-
-      const completion = await groq.chat.completions.create({
-        messages: [{ role: "user", content: prompt }],
-        model: "llama-3.3-70b-versatile",
-        response_format: { type: "json_object" },
-      });
-      aiData = JSON.parse(completion.choices[0]?.message?.content || '{}');
-    }
-
-    // Generate Visual Assets via Secure Backend Proxy
-    const generateImage = (keyword) => {
-      const seed = Math.floor(Math.random() * 1000000);
-      const promptText = `Professional high-end product photography of ${productName}, ${keyword}, premium lighting, 8k, photorealistic, sharp focus, clean background`;
-      return `${BASE_URL}/api/generate-image?prompt=${encodeURIComponent(promptText)}&seed=${seed}`;
-    };
-
-    const responseData = {
-      pinterest: [
-        { id: 1, url: generateImage("lifestyle aesthetic flatlay"), title: aiData.pinterest_title || 'Viral Pin' },
-        { id: 2, url: generateImage("minimalist editorial display"), title: 'Editorial Choice' },
-        { id: 3, url: generateImage("macro detailed product shot"), title: 'Detail View' },
-      ],
-      instagram: [
-        { id: 1, url: generateImage("trending social media feed post"), caption: aiData.instagram_caption || `You need this ${productName}! 💸` },
-        { id: 2, url: generateImage("high-end organic UGC lifestyle"), caption: `${productName} vibes ✨` },
-      ],
-      ai_analysis: aiData
-    };
-
-    // Increment total_pins in profiles
-    if (supabase && req.body.userId) {
-      try {
-        await supabase.rpc('increment_profile_stat', {
-          user_id: req.body.userId,
-          stat_column: 'total_pins'
-        });
-      } catch (statErr) {
-        console.error('Failed to increment pins stat:', statErr);
-      }
-    }
-
-    console.log("🚀 Synthesis complete. Sending response.");
-    res.json(responseData);
-
-  } catch (error) {
-    console.error('CRITICAL AI Gen Error:', error);
-
-    const fallbackImage = (k) => `${BASE_URL}/api/generate-image?prompt=${encodeURIComponent(productName + " " + k)}`;
-
-    res.json({
-      pinterest: [{ id: 101, url: fallbackImage("aesthetic"), title: productName }],
-      instagram: [{ id: 101, url: fallbackImage("product"), caption: `Check out ${productName}!` }],
-      ai_analysis: { aesthetic_score: "N/A", color_palette: [], hashtags: [] },
-      error: "AI generation hit a snag, but we synthesized basic assets."
-    });
-  }
-});
-
-// Apify Connection
-const { ApifyClient } = require('apify-client');
-let apifyClient;
-if (process.env.APIFY_API_TOKEN) {
-  apifyClient = new ApifyClient({
-    token: process.env.APIFY_API_TOKEN,
-  });
-}
-
-app.post('/api/scrape-ads', async (req, res) => {
-  const { niche, searchQuery } = req.body;
-
-  if (!apifyClient) {
-    return res.status(503).json({ error: 'Apify client not configured' });
-  }
-
-  try {
-    const searchTerm = searchQuery || niche || 'dropshipping';
-    // Convert to hashtag format (remove spaces, lowercase) for reliability
-    const hashtag = searchTerm.replace(/\s+/g, '').toLowerCase();
-
-    console.log(`🕷️ Starting scrape for hashtag: #${hashtag}`);
-
-    // Input for the free "TikTok Scraper" (clockworks/tiktok-scraper or similar)
-    const input = {
-      "hashtags": [hashtag],
-      "resultsPerPage": 6, // Limit to 6 to save credits/time
-      "shouldDownloadVideos": false,
-      "shouldDownloadCovers": false,
-      "searchSection": "" // Must be empty string, /video, or /user. Empty + hashtags -> tag search.
-    };
-
-    // This is a long-running process, so in a real app we'd use a queue.
-    // For this MVP, we await it (might timeout on client, but server continues).
-    // Better: Return "Scraping Started" and webhook back.
-    // MVP: Just wait up to 30s.
-
-    const run = await apifyClient.actor("clockworks/tiktok-scraper").call(input);
-
-    const { items } = await apifyClient.dataset(run.defaultDatasetId).listItems();
-    console.log(`📦 Found ${items.length} videos`);
-
-    let savedCount = 0;
-    if (supabase) {
-      for (const item of items) {
-        const videoUrl = item.videoUrl || item.webVideoUrl;
-        if (!videoUrl) continue;
-
-        const adData = {
-          niche: searchQuery || niche || 'general',
-          platform: 'tiktok',
-          video_url: videoUrl,
-          thumbnail_url: item.videoMeta?.coverUrl || 'https://via.placeholder.com/300x500?text=No+Cover',
-          title: item.text || 'Viral Video',
-          views_count: item.playCount || 0,
-          likes_count: item.diggCount || 0,
-          comments_count: item.commentCount || 0,
-          external_id: item.id,
-          created_at: new Date(),
-          analysis: {
-            hook: "AI Analysis Pending...",
-            problem: "Pending...",
-            solution: "Pending..."
-          }
-        };
-
-        const { error } = await supabase.from('ads').upsert(adData, { onConflict: 'external_id' });
-        if (!error) savedCount++;
-      }
-    }
-
-    res.json({ success: true, message: `Scraped and saved ${savedCount} ads`, count: savedCount });
-
-  } catch (error) {
-    console.error('Scrape Error:', error);
-    res.status(500).json({ error: 'Scraping failed', details: error.message });
-  }
-});
-
-// Multer for file uploads
-const multer = require('multer');
-const upload = multer({ dest: 'uploads/' });
-const { GoogleAIFileManager } = require("@google/generative-ai/server");
-
-// Initialize Gemini File Manager if API Key exists
-let fileManager;
-if (process.env.GEMINI_API_KEY) {
-  fileManager = new GoogleAIFileManager(process.env.GEMINI_API_KEY);
-}
-
-app.post('/api/analyze-video', upload.single('video'), async (req, res) => {
-  if (!req.file) {
-    return res.status(400).json({ error: 'No video file provided' });
-  }
-
-  if (!genAI || !fileManager) {
-    return res.status(503).json({ error: 'AI service not configured' });
-  }
-
-  try {
-    console.log('📤 Uploading video to Gemini...');
-    const uploadResult = await fileManager.uploadFile(req.file.path, {
-      mimeType: req.file.mimetype,
-      displayName: req.file.originalname,
-    });
-
-    console.log(`✅ Video uploaded: ${uploadResult.file.uri}`);
-
-    // Wait for file to handle processing
-    let file = await fileManager.getFile(uploadResult.file.name);
-    while (file.state === "PROCESSING") {
-      process.stdout.write(".");
-      await new Promise((resolve) => setTimeout(resolve, 2000));
-      file = await fileManager.getFile(uploadResult.file.name);
-    }
-    console.log(`\n✅ Video processing complete: ${file.state}`);
-
-    if (file.state === "FAILED") {
-      throw new Error("Video processing failed.");
-    }
-
-    // Analyze with Gemini
-    console.log('🧠 Analyzing video with Gemini Flash...');
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-
-    const prompt = `
-      You are a World-Class Creative Director for TikTok Ads.
-      Analyze this video frame-by-frame.
-
-      Output strictly valid JSON (no markdown) with this structure:
-      {
-        "score": number (1-10),
-        "niche": string (one of: "beauty", "tech", "fashion", "home", "fitness", "pets"),
-        "keywords": [string] (5 relevant tags),
-        "hook_analysis": {
-          "score": number (1-10),
-          "critique": string,
-          "suggestion": string
-        },
-        "pacing_analysis": {
-             "critique": string,
-             "suggestion": string
-        },
-        "cta_analysis": {
-             "critique": string,
-             "suggestion": string
-        },
-        "viral_checklist": [
-           { "label": "Strong Visual Hook?", "passed": boolean },
-           { "label": "Problem/Solution Clear?", "passed": boolean },
-           { "label": "Fast Pacing?", "passed": boolean },
-           { "label": "Clear CTA?", "passed": boolean }
-        ]
-      }
+    THE DATA (I just watched this and found):
+    - Awareness: ${dna.awareness_level}
+    - Trigger: ${dna.psychology_breakdown.trigger}
+    - Style: ${dna.vibe_assessment?.style || 'Guerilla UGC'}
+    
+    The Rulebook (VETERAN CD ONLY):
+    1. **Structural Arbitrage**: Your primary job is to treat the analyzed video as a "Psychological Blueprint." The user might want to steal a winning 'Hook' from a Toy ad and use it for a 'Kitchen Gadget.' You MUST facilitate this "Cross-Niche" transfer.
+    2. **The "Anchor" Protocol**: You don't know about the user's product yet. In the intro, you MUST ask for their "Product Anchor" (what they are selling).
+    3. **The "Steal & Adapt" Law**: Identify the "Secret Sauce" (e.g., a specific visual gesture or audio trigger) and explain how to apply it to *any* product the user mentions.
+    4. **Friction Finder**: If the user is stuck, give 3 "Niche-Agnostic" hook ideas that work for their product based on the analyzed DNA.
+    
+    ${isIntro ? `
+    INSTRUCTION: Opening message. Deliver a "DIRECTOR'S STRATEGIC MEMO":
+    
+    1. **The Verdict**: 1-sentence assessment of why this video is a winner/burner.
+    2. **The Stealable Pattern**: Identify the one psychological trigger that is "Niche-Agnostic" (can be stolen for any product).
+    3. **The Bridge**: Briefly explain how this pattern works for this ${dna.niche || 'specific'} niche.
+    4. **The Anchor Request**: End with: "I've deconstructed the blueprint. Give me your **Product Anchor** (what are you selling?)—and tell me if you want to stay in this niche or 'Arbitrage' this hook to something completely different."
+    
+    Be direct, high-stakes, and elite.` : 'Chat with them like a partner. Act as their "Structural Arbitrage" expert. Bridge the analyzed DNA to whatever product they mention.'}
     `;
 
-    const result = await model.generateContent([
-      { fileData: { mimeType: uploadResult.file.mimeType, fileUri: uploadResult.file.uri } },
-      { text: prompt },
-    ]);
+    const completion = await groq.chat.completions.create({
+      messages: [
+        { role: "system", content: systemPrompt },
+        ...(messages || [])
+      ],
+      model: "llama-3.3-70b-versatile",
+      temperature: 0.7,
+    }, { timeout: 60000 }); // 60s timeout
 
-    const text = result.response.text().replace(/```json/g, '').replace(/```/g, '').trim();
-    let analysis;
-    try {
-      analysis = JSON.parse(text);
-    } catch (e) {
-      console.error("Failed to parse AI JSON", text);
-      analysis = { score: 5, niche: "general", keywords: [], error: "AI Output Parse Error" };
-    }
-
-    // Fetch Recommendations based on Niche
-    let recommendedAds = [];
-    if (supabase) {
-      console.log(`🔍 Fetching recommendations for niche: ${analysis.niche}`);
-      // Try searching by niche first
-      const { data: nicheAds } = await supabase
-        .from('ads')
-        .select('*')
-        .eq('niche', analysis.niche)
-        .order('likes_count', { ascending: false }) // Get most viral
-        .limit(3);
-
-      if (nicheAds && nicheAds.length > 0) {
-        recommendedAds = nicheAds;
-      } else {
-        // Fallback to most viral general ads
-        const { data: viralAds } = await supabase
-          .from('ads')
-          .select('*')
-          .order('views_count', { ascending: false })
-          .limit(3);
-        recommendedAds = viralAds || [];
-      }
-    }
-
-    // Cleanup (Optional: Delete from Gemini to save storage? Keep for now)
-    // await fileManager.deleteFile(uploadResult.file.name); 
-
-    // Increment total_videos_analyzed in profiles
-    if (supabase && req.body.userId) {
-      try {
-        await supabase.rpc('increment_profile_stat', {
-          user_id: req.body.userId,
-          stat_column: 'total_videos_analyzed'
-        });
-      } catch (statErr) {
-        console.error('Failed to increment videos stat:', statErr);
-      }
-    }
-
-    res.json({
-      analysis: analysis,
-      recommendations: recommendedAds.map(ad => ({
-        id: ad.id,
-        title: ad.title,
-        thumbnail: ad.thumbnail_url,
-        videoUrl: ad.video_url,
-        views: formatNumber(ad.views_count)
-      }))
-    });
-
+    res.json({ message: completion.choices[0]?.message?.content });
   } catch (error) {
-    console.error('Video Analysis Error:', error);
-    res.status(500).json({ error: 'Failed to analyze video', details: error.message });
+    console.error('Chat error:', error);
+    res.status(500).json({ error: 'Failed' });
+  }
+});
+
+// Session Management Endpoints
+app.post('/api/save-lounge-session', async (req, res) => {
+  const { sessionId, userId, videoUrl, dna, messages, title } = req.body;
+  if (!userId) return res.status(400).json({ error: 'User ID is required' });
+
+  try {
+    let result;
+    if (sessionId) {
+      // Update existing session
+      const { data, error } = await supabase
+        .from('lounge_sessions')
+        .update({ messages, updated_at: new Date() })
+        .eq('id', sessionId)
+        .eq('user_id', userId)
+        .select()
+        .single();
+      if (error) throw error;
+      result = data;
+    } else {
+      // Create new session
+      const { data, error } = await supabase
+        .from('lounge_sessions')
+        .insert([{
+          user_id: userId,
+          title: title || `Analysis: ${videoUrl.substring(0, 30)}...`,
+          video_url: videoUrl,
+          dna,
+          messages,
+          created_at: new Date(),
+          updated_at: new Date()
+        }])
+        .select()
+        .single();
+      if (error) throw error;
+      result = data;
+    }
+    res.json(result);
+  } catch (error) {
+    console.error('Save session error:', error);
+    res.status(500).json({ error: 'Failed to save session' });
+  }
+});
+
+app.get('/api/user-sessions', async (req, res) => {
+  const { userId } = req.query;
+  if (!userId) return res.status(400).json({ error: 'User ID is required' });
+
+  try {
+    const { data, error } = await supabase
+      .from('lounge_sessions')
+      .select('id, title, video_url, created_at')
+      .eq('user_id', userId)
+      .order('updated_at', { ascending: false });
+
+    if (error) throw error;
+    res.json(data);
+  } catch (error) {
+    console.error('Fetch sessions error:', error);
+    res.status(500).json({ error: 'Failed to fetch sessions' });
+  }
+});
+
+app.get('/api/lounge-session/:id', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const { data, error } = await supabase
+      .from('lounge_sessions')
+      .select('*')
+      .eq('id', id)
+      .single();
+
+    if (error) throw error;
+    res.json(data);
+  } catch (error) {
+    console.error('Fetch session error:', error);
+    res.status(500).json({ error: 'Failed to fetch session' });
+  }
+});
+
+app.post('/api/generate-final-script', async (req, res) => {
+  const { messages, dna, userId } = req.body;
+
+  if (!groq) return res.status(503).json({ error: 'AI service not available' });
+
+  try {
+    const finalPrompt = `AS THE ELITE CREATIVE DIRECTOR, SYNTHESIZE THIS MASTERMIND SESSION INTO A PRODUCTION GUIDE.
+    
+    ORIGINAL DNA:
+    - Awareness Level: ${dna.awareness_level}
+    - Big Idea: ${dna.big_idea}
+    - Critique Hook: ${dna.hook_analysis.critique}
+    
+    CHAT CONTEXT (THE USER PREFERENCES):
+    ${messages.map(m => `${m.role.toUpperCase()}: ${m.content}`).join('\n')}
+    
+    INSTRUCTION: 
+    - Create an Agency-Grade Viral Production Guide.
+    - Replicate the psychological energy of the original DNA but adapt for the new product using the chat context.
+    - The script must be high-AOV, high-RECOUP focused.
+    
+    Output JSON only:
+    {
+        "title": "Viral Script Name",
+        "concept": "Brief concept summary",
+        "awareness_level": "${dna.awareness_level}",
+        "big_idea": "Synthesis of the chat + DNA",
+        "shot_list": [
+            { "time": "0-3s", "visual": "...", "audio": "...", "overlay": "..." },
+            { "time": "3-8s", "visual": "...", "audio": "...", "overlay": "..." },
+            { "time": "8-15s", "visual": "...", "audio": "...", "overlay": "..." },
+            { "time": "15s+", "visual": "...", "audio": "...", "overlay": "..." }
+        ]
+    }`;
+
+    const completion = await groq.chat.completions.create({
+      messages: [{ role: "user", content: finalPrompt }],
+      model: "llama-3.3-70b-versatile",
+      response_format: { type: "json_object" },
+    }, { timeout: 60000 });
+
+    const script = JSON.parse(completion.choices[0]?.message?.content || '{}');
+
+    // Save to Vault
+    if (supabase && userId) {
+      await supabase.from('scripts').insert([{
+        user_id: userId,
+        title: script.title,
+        script_content: script,
+        created_at: new Date()
+      }]);
+    }
+
+    res.json(script);
+  } catch (error) {
+    console.error('Script generation error:', error);
+    res.status(500).json({ error: 'Failed' });
   }
 });
 

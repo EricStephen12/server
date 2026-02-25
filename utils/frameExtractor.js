@@ -1,9 +1,9 @@
 const ffmpeg = require('fluent-ffmpeg');
 const fs = require('fs');
 const path = require('path');
-const axios = require('axios');
-const { execSync } = require('child_process');
-const { Downloader } = require('@tobyg74/tiktok-api-dl');
+const { execSync, exec } = require('child_process');
+const util = require('util');
+const execPromise = util.promisify(exec);
 
 // Try to find ffmpeg path
 try {
@@ -13,7 +13,6 @@ try {
         console.log('✅ ffmpeg found at:', ffmpegPath);
     }
 } catch (error) {
-    // Try common paths
     const commonPaths = ['/usr/bin/ffmpeg', '/usr/local/bin/ffmpeg', '/opt/homebrew/bin/ffmpeg'];
     for (const testPath of commonPaths) {
         if (fs.existsSync(testPath)) {
@@ -25,138 +24,118 @@ try {
 }
 
 /**
- * Resolve TikTok page URL to actual video download URL
- * @param {string} url - TikTok page URL
- * @returns {Promise<string>} - Direct video download URL
- */
-async function resolveTikTokUrl(url) {
-    try {
-        console.log('🔍 Resolving TikTok URL...');
-        const result = await Downloader(url, { version: 'v1' });
-
-        if (result && result.status === 'success' && result.result) {
-            const res = result.result;
-            // Try different video quality options or addresses
-            let videoUrl = res.video1 || res.video2 || res.video_hd || res.video ||
-                (res.downloadAddr && res.downloadAddr[0]) ||
-                (res.playAddr && res.playAddr[0]);
-
-            // If videoUrl is an object, try to find a string URL inside it
-            if (videoUrl && typeof videoUrl === 'object') {
-                videoUrl = videoUrl.url || (Array.isArray(videoUrl) ? videoUrl[0] : null);
-            }
-
-            if (videoUrl && typeof videoUrl === 'string') {
-                console.log('✅ TikTok video URL resolved');
-                return videoUrl;
-            }
-        }
-
-        throw new Error('Could not extract video URL from TikTok');
-    } catch (error) {
-        console.error('TikTok URL resolution failed:', error.message);
-        // Return original URL as fallback
-        return url;
-    }
-}
-
-/**
  * Extract frames from a video URL at specific timestamps
  * @param {string} videoUrl - URL of the video to extract frames from
- * @param {number[]} timestamps - Array of timestamps in seconds (e.g., [0, 3, 6, 9])
+ * @param {number[]} timestamps - Array of timestamps in seconds
  * @returns {Promise<string[]>} - Array of base64-encoded frame images
  */
-async function extractFrames(videoUrl, timestamps = [0, 3, 6, 9, 12, 15]) {
+async function extractFrames(videoUrl, manualTimestamps = null) {
     const tempDir = path.join(__dirname, '../temp');
-    const videoPath = path.join(tempDir, `video_${Date.now()}.mp4`);
+    if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
 
-    // Create temp directory if it doesn't exist
-    if (!fs.existsSync(tempDir)) {
-        fs.mkdirSync(tempDir, { recursive: true });
-    }
+    const videoId = Date.now();
+    const videoPath = path.join(tempDir, `video_${videoId}.mp4`);
 
     try {
-        // Resolve TikTok URL if it's a TikTok page URL
-        let downloadUrl = videoUrl;
-        if (videoUrl.includes('tiktok.com')) {
-            downloadUrl = await resolveTikTokUrl(videoUrl);
+        console.log(`🎥 Initiating Elite Extraction for: ${videoUrl}`);
+
+        const ytdlCommand = `yt-dlp -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" --no-check-certificates --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" -o "${videoPath}" "${videoUrl}"`;
+
+        console.log('⚡ Scraping TikTok Video DNA...');
+        await execPromise(ytdlCommand);
+
+        if (!fs.existsSync(videoPath)) {
+            throw new Error('yt-dlp failed to create a video file.');
         }
 
-        // Download video
-        console.log('Downloading video from:', downloadUrl);
-        const response = await axios({
-            method: 'GET',
-            url: downloadUrl,
-            responseType: 'stream',
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Referer': 'https://www.tiktok.com/',
-                'Accept': 'video/webm,video/ogg,video/*;q=0.9,application/ogg;q=0.7,audio/*;q=0.6,*/*;q=0.5',
-            },
-            maxRedirects: 5,
-            timeout: 30000
-        });
-
-        const writer = fs.createWriteStream(videoPath);
-        response.data.pipe(writer);
-
-        await new Promise((resolve, reject) => {
-            writer.on('finish', resolve);
-            writer.on('error', reject);
-        });
-
-        console.log('Video downloaded successfully');
-
-        // Verify the file exists and has content
         const stats = fs.statSync(videoPath);
-        if (stats.size === 0) {
-            throw new Error('Downloaded video file is empty');
-        }
-        console.log(`Video file size: ${(stats.size / 1024 / 1024).toFixed(2)} MB`);
+        console.log(`✅ DNA Downloaded: ${(stats.size / 1024 / 1024).toFixed(2)} MB`);
 
-        // Extract frames
+        // Get Metadata (Duration)
+        const getMetadata = (path) => new Promise((resolve, reject) => {
+            ffmpeg.ffprobe(path, (err, metadata) => {
+                if (err) reject(err);
+                else resolve(metadata);
+            });
+        });
+
+        const metadata = await getMetadata(videoPath);
+        const duration = metadata.format.duration || 30;
+
+        // Dynamic Sampling: Stay inside Groq's 5-image limit
+        // We prioritize the Hook (0, 2s) and then spread the rest
+        let timestamps = manualTimestamps;
+        if (!timestamps) {
+            timestamps = [
+                0,
+                Math.min(2, duration * 0.1),
+                duration * 0.25,
+                duration * 0.5,
+                duration * 0.9
+            ].map(t => Math.floor(t));
+
+            // Deduplicate and filter (just in case video is < 5s)
+            timestamps = [...new Set(timestamps)].filter(t => t < duration).slice(0, 5);
+        }
+
         const frames = [];
+        console.log(`🧠 Deconstructing ${timestamps.length} Mastery Points across ${duration.toFixed(1)}s...`);
 
         for (const timestamp of timestamps) {
-            const framePath = path.join(tempDir, `frame_${timestamp}s.jpg`);
+            const frameFilename = `frame_${videoId}_${timestamp}.jpg`;
+            const framePath = path.join(tempDir, frameFilename);
 
-            await new Promise((resolve, reject) => {
-                ffmpeg(videoPath)
-                    .screenshots({
-                        timestamps: [timestamp],
-                        filename: `frame_${timestamp}s.jpg`,
-                        folder: tempDir,
-                        size: '1280x720'
-                    })
-                    .on('end', resolve)
-                    .on('error', reject);
-            });
+            try {
+                await new Promise((resolve, reject) => {
+                    ffmpeg(videoPath)
+                        .seekInput(timestamp)
+                        .frames(1)
+                        .output(framePath)
+                        .on('end', resolve)
+                        .on('error', reject)
+                        .run();
+                });
 
-            // Read frame and convert to base64
-            const frameBuffer = fs.readFileSync(framePath);
-            const base64Frame = frameBuffer.toString('base64');
-            frames.push({
-                timestamp,
-                base64: base64Frame,
-                mimeType: 'image/jpeg'
-            });
-
-            // Clean up frame file
-            fs.unlinkSync(framePath);
+                if (fs.existsSync(framePath)) {
+                    const frameBuffer = fs.readFileSync(framePath);
+                    frames.push({
+                        timestamp,
+                        base64: frameBuffer.toString('base64'),
+                        mimeType: 'image/jpeg'
+                    });
+                    fs.unlinkSync(framePath);
+                }
+            } catch (ffmpegErr) {
+                console.warn(`⚠️ Skipping frame at ${timestamp}s:`, ffmpegErr.message);
+            }
         }
 
-        // Clean up video file
-        fs.unlinkSync(videoPath);
+        if (frames.length === 0) {
+            throw new Error('Failed to extract any DNA samples.');
+        }
 
-        console.log(`Extracted ${frames.length} frames successfully`);
-        return frames;
+        console.log(`🎨 Extracted ${frames.length} DNA samples successfully`);
+
+        // Extract Audio for Transcription
+        const audioPath = path.join(tempDir, `audio_${videoId}.mp3`);
+        console.log('🎵 Extracting Audio DNA...');
+        await new Promise((resolve, reject) => {
+            ffmpeg(videoPath)
+                .toFormat('mp3')
+                .on('end', resolve)
+                .on('error', reject)
+                .save(audioPath);
+        });
+
+        // Cleanup video
+        if (fs.existsSync(videoPath)) fs.unlinkSync(videoPath);
+
+        return { frames, audioPath };
 
     } catch (error) {
-        // Clean up on error
-        if (fs.existsSync(videoPath)) {
-            fs.unlinkSync(videoPath);
-        }
-        throw new Error(`Frame extraction failed: ${error.message}`);
+        console.error('❌ Elite Extraction Pipeline Error:', error.message);
+        if (fs.existsSync(videoPath)) fs.unlinkSync(videoPath);
+        throw error;
     }
 }
 
