@@ -44,7 +44,43 @@ async function downloadDirect(url, destPath) {
 }
 
 /**
+ * Resolve a TikTok URL to a direct download link using tikwm.com API.
+ * This is the same backend that SnapTik and similar tools use.
+ * Works from any server (Render, Railway, etc.) — no IP blocking issues.
+ */
+async function resolveTikTokUrl(url) {
+    console.log('⚡ Resolving TikTok video via tikwm API...');
+
+    // Extract clean URL (strip tracking params)
+    const cleanUrl = url.split('?')[0];
+
+    const response = await axios({
+        method: 'post',
+        url: 'https://tikwm.com/api/',
+        headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        },
+        data: `url=${encodeURIComponent(cleanUrl)}&hd=1`
+    });
+
+    const data = response.data;
+
+    if (data?.code === 0 && data?.data) {
+        // Prefer HD play URL, fallback to regular play, then download URL
+        const videoUrl = data.data.hdplay || data.data.play || data.data.wmplay;
+        if (videoUrl) {
+            console.log('✅ tikwm resolved video URL successfully');
+            return videoUrl;
+        }
+    }
+
+    throw new Error('tikwm API failed to resolve TikTok video URL.');
+}
+
+/**
  * Find the yt-dlp binary path — checks local project binary first, then system.
+ * Used as a LOCAL FALLBACK only (doesn't work on cloud servers like Render).
  */
 function getYtDlpPath() {
     const localBin = path.join(__dirname, '../yt-dlp');
@@ -56,13 +92,13 @@ function getYtDlpPath() {
 }
 
 /**
- * Download a video using yt-dlp. Works with TikTok, YouTube, and many other platforms.
+ * Download a video using yt-dlp (local fallback).
  */
 async function downloadWithYtDlp(url, destPath) {
     const ytdlp = getYtDlpPath();
-    if (!ytdlp) throw new Error('yt-dlp not found. Run npm install to download it.');
+    if (!ytdlp) throw new Error('yt-dlp not found.');
 
-    console.log(`⚡ Downloading video with yt-dlp (${ytdlp})...`);
+    console.log(`⚡ Fallback: Downloading video with yt-dlp...`);
     return new Promise((resolve, reject) => {
         const cmd = `"${ytdlp}" -o "${destPath}" --no-playlist --merge-output-format mp4 "${url}"`;
         exec(cmd, { timeout: 120000 }, (error, stdout, stderr) => {
@@ -94,7 +130,15 @@ async function extractFrames(videoUrl, manualTimestamps = null) {
         const isTikTok = videoUrl.includes('tiktok.com');
 
         if (isTikTok) {
-            await downloadWithYtDlp(videoUrl, videoPath);
+            // PRIMARY: Use tikwm API (works on all servers including Render)
+            try {
+                const directUrl = await resolveTikTokUrl(videoUrl);
+                console.log('⚡ Downloading TikTok video...');
+                await downloadDirect(directUrl, videoPath);
+            } catch (apiErr) {
+                console.warn('⚠️ tikwm API failed, trying yt-dlp fallback...', apiErr.message);
+                await downloadWithYtDlp(videoUrl, videoPath);
+            }
         } else {
             console.log('⚡ Downloading video from direct URL...');
             await downloadDirect(videoUrl, videoPath);
