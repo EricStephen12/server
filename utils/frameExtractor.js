@@ -1,5 +1,6 @@
 const ffmpeg = require('fluent-ffmpeg');
 const ffmpegStatic = require('ffmpeg-static');
+const ffprobeInstaller = require('@ffprobe-installer/ffprobe');
 const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
@@ -10,6 +11,14 @@ if (ffmpegStatic) {
     console.log('✅ ffmpeg found at:', ffmpegStatic);
 } else {
     console.warn('⚠️ ffmpeg-static not found, ffmpeg may not work');
+}
+
+// Set ffprobe path (needed for video metadata/duration detection)
+if (ffprobeInstaller?.path) {
+    ffmpeg.setFfprobePath(ffprobeInstaller.path);
+    console.log('✅ ffprobe found at:', ffprobeInstaller.path);
+} else {
+    console.warn('⚠️ ffprobe-installer not found, ffprobe may not work');
 }
 
 /**
