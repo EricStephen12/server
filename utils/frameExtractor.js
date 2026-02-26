@@ -118,7 +118,7 @@ async function downloadWithYtDlp(url, destPath) {
  * Supports TikTok URLs and direct mp4 URLs.
  */
 async function extractFrames(videoUrl, manualTimestamps = null) {
-    const tempDir = path.join(__dirname, '../temp');
+    const tempDir = process.env.RENDER ? '/tmp' : path.join(__dirname, '../temp');
     if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
 
     const videoId = Date.now();
