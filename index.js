@@ -86,9 +86,18 @@ app.get('/api/debug', async (req, res) => {
   // 2. ffmpeg
   try {
     const ffmpegPath = execSync('which ffmpeg', { encoding: 'utf-8' }).trim();
-    report.ffmpeg = { found: true, path: ffmpegPath };
+    report.ffmpeg = { found: true, path: ffmpegPath, source: 'system' };
   } catch (_) {
-    report.ffmpeg = { found: false, error: 'ffmpeg not found in PATH' };
+    try {
+      const ffmpegStatic = require('ffmpeg-static');
+      if (ffmpegStatic && fs.existsSync(ffmpegStatic)) {
+        report.ffmpeg = { found: true, path: ffmpegStatic, source: 'ffmpeg-static' };
+      } else {
+        report.ffmpeg = { found: false, error: 'ffmpeg-static module found but binary missing' };
+      }
+    } catch (e2) {
+      report.ffmpeg = { found: false, error: 'ffmpeg not found in PATH or ffmpeg-static' };
+    }
   }
 
   // 3. /tmp writability
