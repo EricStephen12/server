@@ -145,6 +145,56 @@ app.get('/api/debug', async (req, res) => {
   res.json({ status: 'debug_complete', report });
 });
 
+// STEP-BY-STEP PIPELINE TESTER — hit with ?url=YOUR_TIKTOK_URL
+app.get('/api/test-tiktok', async (req, res) => {
+  const videoUrl = req.query.url;
+  if (!videoUrl) return res.status(400).json({ error: 'Pass ?url=TIKTOK_URL' });
+  const axios = require('axios');
+  const fs = require('fs');
+  const result = { url: videoUrl, steps: {} };
+
+  // Step 1: tikwm resolution
+  try {
+    const cleanUrl = videoUrl.split('?')[0];
+    const tikwmRes = await axios.post('https://tikwm.com/api/',
+      `url=${encodeURIComponent(cleanUrl)}&hd=1`,
+      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, timeout: 15000 }
+    );
+    const d = tikwmRes.data;
+    result.steps.tikwm = {
+      code: d.code,
+      msg: d.msg,
+      has_hdplay: !!d.data?.hdplay,
+      has_play: !!d.data?.play,
+      has_wmplay: !!d.data?.wmplay,
+      video_url_preview: (d.data?.hdplay || d.data?.play || d.data?.wmplay || '').substring(0, 80)
+    };
+    const videoDownloadUrl = d.data?.hdplay || d.data?.play || d.data?.wmplay;
+
+    // Step 2: download test (head request only to check if URL works)
+    if (videoDownloadUrl) {
+      try {
+        const headRes = await axios.head(videoDownloadUrl, { timeout: 10000 });
+        result.steps.download_check = { status: headRes.status, content_type: headRes.headers['content-type'] };
+      } catch (e) {
+        result.steps.download_check = { error: e.message };
+      }
+    }
+  } catch (e) {
+    result.steps.tikwm = { error: e.message };
+  }
+
+  // Step 3: ffmpeg check
+  try {
+    const ffmpegStatic = require('ffmpeg-static');
+    result.steps.ffmpeg = { path: ffmpegStatic, exists: fs.existsSync(ffmpegStatic) };
+  } catch (e) {
+    result.steps.ffmpeg = { error: e.message };
+  }
+
+  res.json(result);
+});
+
 
 // Private Vault - Save analyzed video to user collection
 app.post('/api/save-to-vault', async (req, res) => {
