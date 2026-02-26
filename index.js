@@ -151,9 +151,15 @@ app.get('/api/test-tiktok', async (req, res) => {
   if (!videoUrl) return res.status(400).json({ error: 'Pass ?url=TIKTOK_URL' });
   const axios = require('axios');
   const fs = require('fs');
-  const result = { url: videoUrl, steps: {} };
+  const ffmpeg = require('fluent-ffmpeg');
+  const ffmpegStatic = require('ffmpeg-static');
+  if (ffmpegStatic) ffmpeg.setFfmpegPath(ffmpegStatic);
 
-  // Step 1: tikwm resolution
+  const result = { url: videoUrl, steps: {} };
+  let videoDownloadUrl = null;
+  const testVideoPath = '/tmp/test_video_' + Date.now() + '.mp4';
+
+  // Step 1: tikwm
   try {
     const cleanUrl = videoUrl.split('?')[0];
     const tikwmRes = await axios.post('https://tikwm.com/api/',
@@ -161,39 +167,52 @@ app.get('/api/test-tiktok', async (req, res) => {
       { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, timeout: 15000 }
     );
     const d = tikwmRes.data;
-    result.steps.tikwm = {
-      code: d.code,
-      msg: d.msg,
-      has_hdplay: !!d.data?.hdplay,
-      has_play: !!d.data?.play,
-      has_wmplay: !!d.data?.wmplay,
-      video_url_preview: (d.data?.hdplay || d.data?.play || d.data?.wmplay || '').substring(0, 80)
-    };
-    const videoDownloadUrl = d.data?.hdplay || d.data?.play || d.data?.wmplay;
-
-    // Step 2: download test (head request only to check if URL works)
-    if (videoDownloadUrl) {
-      try {
-        const headRes = await axios.head(videoDownloadUrl, { timeout: 10000 });
-        result.steps.download_check = { status: headRes.status, content_type: headRes.headers['content-type'] };
-      } catch (e) {
-        result.steps.download_check = { error: e.message };
-      }
-    }
+    videoDownloadUrl = d.data?.hdplay || d.data?.play || d.data?.wmplay;
+    result.steps.tikwm = { code: d.code, msg: d.msg, resolved: !!videoDownloadUrl };
   } catch (e) {
     result.steps.tikwm = { error: e.message };
+    return res.json(result);
   }
 
-  // Step 3: ffmpeg check
+  // Step 2: actual download to /tmp
   try {
-    const ffmpegStatic = require('ffmpeg-static');
-    result.steps.ffmpeg = { path: ffmpegStatic, exists: fs.existsSync(ffmpegStatic) };
+    const dlRes = await axios({
+      method: 'get', url: videoDownloadUrl, responseType: 'stream', timeout: 60000,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Referer': 'https://www.tiktok.com/',
+        'Origin': 'https://www.tiktok.com',
+      }
+    });
+    const writer = fs.createWriteStream(testVideoPath);
+    dlRes.data.pipe(writer);
+    await new Promise((resolve, reject) => { writer.on('finish', resolve); writer.on('error', reject); });
+    const stat = fs.statSync(testVideoPath);
+    result.steps.download = { file_size_mb: (stat.size / 1024 / 1024).toFixed(2), path: testVideoPath };
   } catch (e) {
-    result.steps.ffmpeg = { error: e.message };
+    result.steps.download = { error: e.message };
+    return res.json(result);
+  }
+
+  // Step 3: ffprobe
+  try {
+    const metadata = await new Promise((resolve, reject) => {
+      ffmpeg.ffprobe(testVideoPath, (err, data) => err ? reject(err) : resolve(data));
+    });
+    result.steps.ffprobe = {
+      duration: metadata.format?.duration,
+      format: metadata.format?.format_name,
+      streams: metadata.streams?.length
+    };
+  } catch (e) {
+    result.steps.ffprobe = { error: e.message };
+  } finally {
+    if (fs.existsSync(testVideoPath)) fs.unlinkSync(testVideoPath);
   }
 
   res.json(result);
 });
+
 
 
 // Private Vault - Save analyzed video to user collection
