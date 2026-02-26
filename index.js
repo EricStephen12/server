@@ -64,6 +64,79 @@ app.get('/health', async (req, res) => {
   });
 });
 
+// DIAGNOSTIC ENDPOINT — hit this URL in browser to see what's broken
+app.get('/api/debug', async (req, res) => {
+  const { execSync } = require('child_process');
+  const fs = require('fs');
+  const axios = require('axios');
+  const report = {};
+
+  // 1. Env vars
+  report.env = {
+    SUPABASE_URL: !!process.env.SUPABASE_URL,
+    SUPABASE_ANON_KEY: !!process.env.SUPABASE_ANON_KEY,
+    SUPABASE_SERVICE_ROLE_KEY: !!process.env.SUPABASE_SERVICE_ROLE_KEY,
+    GROQ_API_KEY: !!process.env.GROQ_API_KEY,
+    GEMINI_API_KEY: !!process.env.GEMINI_API_KEY,
+    APIFY_API_TOKEN: !!process.env.APIFY_API_TOKEN,
+    RENDER: !!process.env.RENDER,
+    PORT: process.env.PORT,
+  };
+
+  // 2. ffmpeg
+  try {
+    const ffmpegPath = execSync('which ffmpeg', { encoding: 'utf-8' }).trim();
+    report.ffmpeg = { found: true, path: ffmpegPath };
+  } catch (_) {
+    report.ffmpeg = { found: false, error: 'ffmpeg not found in PATH' };
+  }
+
+  // 3. /tmp writability
+  try {
+    const testFile = '/tmp/debug_test.txt';
+    fs.writeFileSync(testFile, 'test');
+    fs.unlinkSync(testFile);
+    report.tmp_writable = true;
+  } catch (e) {
+    report.tmp_writable = false;
+    report.tmp_error = e.message;
+  }
+
+  // 4. tikwm API
+  try {
+    const tikwmRes = await axios.post('https://tikwm.com/api/',
+      'url=https://www.tiktok.com/@tiktok/video/6584647400055855365&hd=1',
+      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, timeout: 10000 }
+    );
+    report.tikwm = { reachable: true, code: tikwmRes.data?.code, has_data: !!tikwmRes.data?.data };
+  } catch (e) {
+    report.tikwm = { reachable: false, error: e.message };
+  }
+
+  // 5. Groq API
+  try {
+    if (!process.env.GROQ_API_KEY) throw new Error('GROQ_API_KEY not set');
+    const testGroq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+    const models = await testGroq.models.list();
+    report.groq = { reachable: true, model_count: models.data?.length };
+  } catch (e) {
+    report.groq = { reachable: false, error: e.message };
+  }
+
+  // 6. Supabase
+  try {
+    if (!supabase) throw new Error('Supabase client not initialized');
+    const { count, error } = await supabase.from('ads').select('*', { count: 'exact', head: true });
+    if (error) throw error;
+    report.supabase = { reachable: true, ads_count: count };
+  } catch (e) {
+    report.supabase = { reachable: false, error: e.message };
+  }
+
+  res.json({ status: 'debug_complete', report });
+});
+
+
 // Private Vault - Save analyzed video to user collection
 app.post('/api/save-to-vault', async (req, res) => {
   const { userId, title, videoUrl, visualDna } = req.body;
