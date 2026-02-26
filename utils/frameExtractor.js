@@ -1,25 +1,15 @@
 const ffmpeg = require('fluent-ffmpeg');
+const ffmpegStatic = require('ffmpeg-static');
 const fs = require('fs');
 const path = require('path');
-const { execSync, exec } = require('child_process');
 const axios = require('axios');
 
-// Try to find ffmpeg path
-try {
-    const ffmpegPath = execSync('which ffmpeg', { encoding: 'utf-8' }).trim();
-    if (ffmpegPath) {
-        ffmpeg.setFfmpegPath(ffmpegPath);
-        console.log('✅ ffmpeg found at:', ffmpegPath);
-    }
-} catch (error) {
-    const commonPaths = ['/usr/bin/ffmpeg', '/usr/local/bin/ffmpeg', '/opt/homebrew/bin/ffmpeg'];
-    for (const testPath of commonPaths) {
-        if (fs.existsSync(testPath)) {
-            ffmpeg.setFfmpegPath(testPath);
-            console.log('✅ ffmpeg found at:', testPath);
-            break;
-        }
-    }
+// Use ffmpeg-static bundled binary (works on Railway, Render, any Linux server)
+if (ffmpegStatic) {
+    ffmpeg.setFfmpegPath(ffmpegStatic);
+    console.log('✅ ffmpeg found at:', ffmpegStatic);
+} else {
+    console.warn('⚠️ ffmpeg-static not found, ffmpeg may not work');
 }
 
 /**
@@ -79,37 +69,23 @@ async function resolveTikTokUrl(url) {
 }
 
 /**
- * Find the yt-dlp binary path — checks local project binary first, then system.
- * Used as a LOCAL FALLBACK only (doesn't work on cloud servers like Render).
- */
-function getYtDlpPath() {
-    const localBin = path.join(__dirname, '../yt-dlp');
-    if (fs.existsSync(localBin)) return localBin;
-    try {
-        return execSync('which yt-dlp', { encoding: 'utf-8' }).trim();
-    } catch (_) { }
-    return null;
-}
-
-/**
- * Download a video using yt-dlp (local fallback).
+ * Download a video using yt-dlp if available (local dev only).
  */
 async function downloadWithYtDlp(url, destPath) {
-    const ytdlp = getYtDlpPath();
-    if (!ytdlp) throw new Error('yt-dlp not found.');
-
-    console.log(`⚡ Fallback: Downloading video with yt-dlp...`);
+    const { exec } = require('child_process');
+    const { execSync } = require('child_process');
+    let ytdlp = null;
+    const localBin = path.join(__dirname, '../yt-dlp');
+    if (fs.existsSync(localBin)) ytdlp = localBin;
+    else { try { ytdlp = execSync('which yt-dlp', { encoding: 'utf-8' }).trim(); } catch (_) { } }
+    if (!ytdlp) throw new Error('yt-dlp not available on this server.');
+    console.log('⚡ Fallback: Downloading with yt-dlp...');
     return new Promise((resolve, reject) => {
-        const cmd = `"${ytdlp}" -o "${destPath}" --no-playlist --merge-output-format mp4 "${url}"`;
-        exec(cmd, { timeout: 120000 }, (error, stdout, stderr) => {
-            if (error) {
-                console.error('yt-dlp stderr:', stderr);
-                reject(new Error(`yt-dlp failed: ${error.message}`));
-            } else {
-                console.log('✅ yt-dlp download complete');
-                resolve();
-            }
-        });
+        exec(`"${ytdlp}" -o "${destPath}" --no-playlist --merge-output-format mp4 "${url}"`,
+            { timeout: 120000 }, (error, stdout, stderr) => {
+                if (error) reject(new Error(`yt-dlp failed: ${error.message}`));
+                else resolve();
+            });
     });
 }
 
