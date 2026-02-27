@@ -4,21 +4,32 @@ const ffprobeInstaller = require('@ffprobe-installer/ffprobe');
 const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
+const os = require('os');
 
-// Use ffmpeg-static bundled binary (works on Railway, Render, any Linux server)
-if (ffmpegStatic) {
-    ffmpeg.setFfmpegPath(ffmpegStatic);
-    console.log('✅ ffmpeg found at:', ffmpegStatic);
-} else {
-    console.warn('⚠️ ffmpeg-static not found, ffmpeg may not work');
+const { execSync } = require('child_process');
+
+function findSystemFfmpeg() {
+    try {
+        const path = execSync('which ffmpeg', { encoding: 'utf-8' }).trim();
+        if (path) return path;
+    } catch (_) { }
+    return null;
 }
 
-// Set ffprobe path (needed for video metadata/duration detection)
+const systemFfmpeg = findSystemFfmpeg();
+
+// Set paths
+if (systemFfmpeg) {
+    ffmpeg.setFfmpegPath(systemFfmpeg);
+    console.log('✅ System ffmpeg found and set as primary:', systemFfmpeg);
+} else if (ffmpegStatic) {
+    ffmpeg.setFfmpegPath(ffmpegStatic);
+    console.log('✅ ffmpeg-static used as fallback:', ffmpegStatic);
+}
+
+// Set ffprobe path
 if (ffprobeInstaller?.path) {
     ffmpeg.setFfprobePath(ffprobeInstaller.path);
-    console.log('✅ ffprobe found at:', ffprobeInstaller.path);
-} else {
-    console.warn('⚠️ ffprobe-installer not found, ffprobe may not work');
 }
 
 /**
@@ -86,10 +97,11 @@ async function resolveTikTokUrl(url) {
     const data = response.data;
 
     if (data?.code === 0 && data?.data) {
-        // Prefer HD play URL, fallback to regular play, then download URL
-        const videoUrl = data.data.hdplay || data.data.play || data.data.wmplay;
+        // PREFER: Regular play URL (usually H.264, universally compatible)
+        // SECONDARY: HD play URL (often uses BVC2/HEVC, might fail)
+        const videoUrl = data.data.play || data.data.hdplay || data.data.wmplay;
         if (videoUrl) {
-            console.log('✅ tikwm resolved video URL successfully');
+            console.log('✅ tikwm resolved video URL successfully (Preferred Standard MP4)');
             return videoUrl;
         }
     }
@@ -123,11 +135,12 @@ async function downloadWithYtDlp(url, destPath) {
  * Supports TikTok URLs and direct mp4 URLs.
  */
 async function extractFrames(videoUrl, manualTimestamps = null) {
-    const tempDir = process.env.RENDER ? '/tmp' : path.join(__dirname, '../temp');
+    // Robust temp directory handling
+    const tempDir = os.tmpdir();
     if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
 
     const videoId = Date.now();
-    const videoPath = path.join(tempDir, `video_${videoId}.mp4`);
+    const videoPath = path.join(tempDir, `socially_video_${videoId}.mp4`);
 
     try {
         console.log(`🎥 Initiating Elite Extraction for: ${videoUrl}`);
@@ -189,12 +202,32 @@ async function extractFrames(videoUrl, manualTimestamps = null) {
 
             try {
                 await new Promise((resolve, reject) => {
+                    console.log(`🎬 Extracting frame at ${timestamp}s to ${framePath}...`);
                     ffmpeg(videoPath)
                         .seekInput(timestamp)
                         .frames(1)
                         .output(framePath)
-                        .on('end', resolve)
-                        .on('error', reject)
+                        .on('start', (cmd) => console.log('🚀 Running ffmpeg:', cmd))
+                        .on('end', () => {
+                            console.log(`✅ Frame extracted at ${timestamp}s`);
+                            resolve();
+                        })
+                        .on('error', (err, stdout, stderr) => {
+                            console.error(`❌ ffmpeg error at ${timestamp}s:`, err.message);
+                            console.error('STDOUT:', stdout);
+                            console.error('STDERR:', stderr);
+                            // Fallback to accurate seek
+                            ffmpeg(videoPath)
+                                .seek(timestamp)
+                                .frames(1)
+                                .output(framePath)
+                                .on('end', resolve)
+                                .on('error', (err2, stdout2, stderr2) => {
+                                    console.error('❌ Accurate seek fallback also failed');
+                                    reject(err2);
+                                })
+                                .run();
+                        })
                         .run();
                 });
 

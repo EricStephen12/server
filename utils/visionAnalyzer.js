@@ -73,7 +73,8 @@ Output as JSON with this EXACT structure:
   "actionable_directions": [
     "Tip 1...",
     "Tip 2..."
-  ]
+  ],
+  "the_secret_sauce": "The one thing that makes this video viral/effective..."
 }
 `
         },

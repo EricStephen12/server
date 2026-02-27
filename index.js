@@ -831,8 +831,9 @@ app.post('/api/creative-director-chat', async (req, res) => {
     const isIntro = !messages || messages.length === 0;
 
     const systemPrompt = `You are an Elite Creative Director & Growth Partner. 
+    Your foundations are David Ogilvy (The Big Idea) and Eugene Schwartz (Level of Awareness).
     You have just PERSONALLY deconstructed the video frames and analyzed the psychological DNA. 
-    We are in a private "Lounge Session." You aren't an AI; you're a mentor who has built 8-figure brands.
+    We are in a private "Lounge Session." You aren't an AI; you're a mentor who has built 8-figure brands using these exact methods.
     
     ${isRoastMode ? 'YOUR PERSONA: ROAST MODE. Be direct, ruthless, and bored of excuses. No sugar-coating.' : 'YOUR PERSONA: Sophisticated Growth Partner. Direct, high-stakes, and elite.'}
 
@@ -840,11 +841,23 @@ app.post('/api/creative-director-chat', async (req, res) => {
     - **Niche**: ${dna.niche || 'General'}
     - **Level of Awareness**: ${dna.awareness_level || 'Unknown'}
     - **The Big Idea**: "${dna.big_idea || 'Not identified'}"
-    - **The Visual Hook**: ${dna.hook_analysis?.critique || 'No visual hook data'}
-    - **The Spoken Hook (Audio)**: ${dna.transcript ? `"${dna.transcript.substring(0, 150)}..."` : 'No transcript data'}
+    - **The Secret Sauce**: "${dna.the_secret_sauce || 'Not identified'}"
+    - **Vibe & Style**: ${dna.vibe_assessment?.style || 'N/A'} (Arc: ${dna.vibe_assessment?.emotional_arc || 'N/A'})
+    - **Visual Hook**: ${dna.hook_analysis?.critique || 'No visual hook data'}
+    - **Full Spoken Transcript**: "${dna.transcript || 'No transcript data'}"
     - **Pacing & Retention**: ${dna.pacing_analysis?.critique || 'Standard pacing'}
+    - **CTA Mastery**: ${dna.cta_analysis?.critique || 'N/A'}
     - **Psychological Trigger**: ${dna.psychology_breakdown?.trigger || 'General curiosity'}
+    - **Psychology Explained**: ${dna.psychology_breakdown?.explanation || 'N/A'}
     - **Actionable Directions**: ${dna.actionable_directions ? dna.actionable_directions.join(', ') : 'Maintain high energy'}
+    
+    PERFORMANCE SCORES:
+    - **Hook Power**: ${dna.metrics?.hook_power || 'N/A'}/10
+    - **Retention Strength**: ${dna.metrics?.retention_score || 'N/A'}/10
+    - **Conversion Ability (CTA)**: ${dna.metrics?.conversion_trigger || 'N/A'}/10
+
+    VIRAL CHECKLIST:
+    ${dna.viral_checklist ? dna.viral_checklist.map(item => `- [${item.passed ? 'x' : ' '}] ${item.label}`).join('\n    ') : '- No checklist data available'}
     
     THE DIRECTOR'S RULEBOOK:
     1. **NO GENERIC ADVICE**: Do not use generic words like "authenticity" or "engagement" unless they are tied to a specific frame or quote from the data above.
@@ -855,11 +868,11 @@ app.post('/api/creative-director-chat', async (req, res) => {
     ${isIntro ? `
     INSTRUCTION: Opening message. Deliver a "DIRECTOR'S STRATEGIC MEMO":
     
-    1. **The Verdict**: 1-sentence sharp assessment of why THIS specific video is a winner. Reference the Big Idea or Visual Hook.
-    2. **The Stealable Pattern**: Identify the ONE psychological trigger from this video that can be stolen for *any* product.
-    3. **The Bridge**: Briefly explain how this pattern works for this ${dna.niche || 'specific'} niche using a detail from the transcript or visual critique.
+    1. **The Honest Verdict**: A 1-sentence sharp, brutally honest assessment of the video's potential. If the scores are high, tell them why it's a winner. If they are low, tell them exactly where it fails (e.g., "This hook is weak," "The CTA is a joke"). Use the PERFORMANCE SCORES as your guide.
+    2. **The Stealable Pattern**: Even if the video is bad, find the ONE psychological trigger or pattern that was *attempted* correctly, or the one thing worth stealing.
+    3. **The Bridge**: Briefly explain how this pattern (or a fix for it) applies to this ${dna.niche || 'specific'} niche. Be expert, not nice.
     4. **The Anchor Request**: End with: "I've deconstructed the blueprint. Give me your **Product Anchor** (what are you selling?)—and tell me if you want to stay in this niche or 'Arbitrage' this hook to something completely different."
-    ` : 'Chat with them like a partner. Act as their "Structural Arbitrage" expert. Bridge the analyzed DNA to whatever product they mention.'}
+    ` : 'Chat with them like a partner. Act as their "Structural Arbitrage" expert. Bridge the analyzed DNA to whatever product they mention. If the video sucked, keep reminding them why we are fixing it.'}
     `;
 
     let completion;
@@ -898,31 +911,46 @@ app.post('/api/creative-director-chat', async (req, res) => {
 // Session Management Endpoints
 app.post('/api/save-lounge-session', async (req, res) => {
   const { sessionId, userId, videoUrl, dna, messages, title } = req.body;
-  if (!userId) return res.status(400).json({ error: 'User ID is required' });
+  if (!userId) {
+    console.warn('⚠️ Attempted to save session without userId');
+    return res.status(400).json({ error: 'User ID is required' });
+  }
+
+  const msgCount = Array.isArray(messages) ? messages.length : 0;
+  console.log(`💾 Persisting: User ${userId} | Session ${sessionId || 'NEW'} | Messages: ${msgCount}`);
 
   try {
     let result;
-    if (sessionId) {
+    if (sessionId && sessionId !== 'null' && sessionId !== 'undefined') {
       // Update existing session
       const [data] = await sql`
         UPDATE lounge_sessions 
-        SET messages = ${JSON.stringify(messages)}, updated_at = ${new Date()}
+        SET messages = ${messages}, updated_at = ${new Date()}
         WHERE id = ${sessionId} AND user_id = ${userId}
         RETURNING *
-  `;
+      `;
       result = data;
-    } else {
+      if (result) {
+        console.log(`✅ Session Updated: ${result.id} (${msgCount} msgs)`);
+      } else {
+        console.warn(`⚠️ Session ID ${sessionId} not found for update. Reverting to Insert.`);
+      }
+    }
+
+    if (!result) {
       // Create new session
+      const cleanTitle = title || `Analysis: ${videoUrl ? videoUrl.substring(0, 30) : 'Video'}...`;
       const [data] = await sql`
         INSERT INTO lounge_sessions(user_id, title, video_url, dna, messages, created_at, updated_at)
-        VALUES(${userId}, ${title || `Analysis: ${videoUrl.substring(0, 30)}...`}, ${videoUrl}, ${JSON.stringify(dna)}, ${JSON.stringify(messages)}, ${new Date()}, ${new Date()})
+        VALUES(${userId}, ${cleanTitle}, ${videoUrl}, ${dna}, ${messages}, ${new Date()}, ${new Date()})
         RETURNING *
-  `;
+      `;
       result = data;
+      console.log(`✅ New Session Created: ${result.id}`);
     }
     res.json(result);
   } catch (error) {
-    console.error('Save session error:', error);
+    console.error('❌ Save session error:', error);
     res.status(500).json({ error: 'Failed to save session' });
   }
 });
@@ -931,18 +959,21 @@ app.get('/api/user-sessions', async (req, res) => {
   const { userId } = req.query;
   if (!userId) return res.status(400).json({ error: 'User ID is required' });
 
+  console.log(`🔍 User Requesting History: ${userId}`);
+
   try {
     const data = await sql`
-      SELECT id, title, video_url, created_at 
+      SELECT id, title, video_url, updated_at as created_at 
       FROM lounge_sessions 
-      WHERE user_id = ${userId} 
+      WHERE user_id = ${userId}
       ORDER BY updated_at DESC
-  `;
-
+      LIMIT 20
+    `;
+    console.log(`✅ Returned ${data.length} sessions for ${userId}`);
     res.json(data);
   } catch (error) {
-    console.error('Fetch sessions error:', error);
-    res.status(500).json({ error: 'Failed to fetch session' });
+    console.error('❌ Fetch sessions error:', error);
+    res.status(500).json({ error: 'Failed' });
   }
 });
 
