@@ -1,7 +1,7 @@
 const express = require('express');
 const cors = require('cors');
+const cookieParser = require('cookie-parser');
 const dotenv = require('dotenv');
-const { createClient } = require('@supabase/supabase-js');
 const Groq = require('groq-sdk');
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const { GoogleAIFileManager } = require("@google/generative-ai/server");
@@ -10,6 +10,8 @@ const { ApifyClient } = require('apify-client');
 const { extractFrames } = require('./utils/frameExtractor');
 const { analyzeVideoFrames } = require('./utils/visionAnalyzer');
 const { transcribeAudio } = require('./utils/audioTranscriber');
+const { sql, testConnection } = require('./db/index');
+const authenticateSession = require('./middleware/auth');
 
 dotenv.config();
 
@@ -22,21 +24,12 @@ const upload = multer({ dest: 'uploads/' });
 // Middleware
 app.use(cors());
 app.use(express.json());
+app.use(cookieParser());
 
-// Supabase Connection
-const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
-
-let supabase;
-try {
-  if (supabaseUrl && supabaseUrl.startsWith('http')) {
-    supabase = createClient(supabaseUrl, supabaseKey);
-  } else {
-    console.warn('Skipping Supabase initialization: Invalid or missing URL');
-  }
-} catch (err) {
-  console.error('Failed to initialize Supabase client:', err.message);
-}
+// Neon Database Connection (Postgres)
+// Note: sql is exported from ./db/index and handles its own pooling.
+// We test the connection on startup for diagnostics.
+testConnection();
 
 // Groq Connection
 let groq;
@@ -73,13 +66,10 @@ app.get('/api/debug', async (req, res) => {
 
   // 1. Env vars
   report.env = {
-    SUPABASE_URL: !!process.env.SUPABASE_URL,
-    SUPABASE_ANON_KEY: !!process.env.SUPABASE_ANON_KEY,
-    SUPABASE_SERVICE_ROLE_KEY: !!process.env.SUPABASE_SERVICE_ROLE_KEY,
+    DATABASE_URL: !!process.env.DATABASE_URL,
+    NEXTAUTH_SECRET: !!process.env.NEXTAUTH_SECRET,
     GROQ_API_KEY: !!process.env.GROQ_API_KEY,
-    GEMINI_API_KEY: !!process.env.GEMINI_API_KEY,
     APIFY_API_TOKEN: !!process.env.APIFY_API_TOKEN,
-    RENDER: !!process.env.RENDER,
     PORT: process.env.PORT,
   };
 
@@ -132,17 +122,88 @@ app.get('/api/debug', async (req, res) => {
     report.groq = { reachable: false, error: e.message };
   }
 
-  // 6. Supabase
+  // 6. Neon Database
   try {
-    if (!supabase) throw new Error('Supabase client not initialized');
-    const { count, error } = await supabase.from('ads').select('*', { count: 'exact', head: true });
-    if (error) throw error;
-    report.supabase = { reachable: true, ads_count: count };
+    const isHealthy = await testConnection();
+    const countRes = await sql`SELECT count(*) FROM ads`;
+    report.db = {
+      reachable: isHealthy,
+      ads_count: parseInt(countRes[0].count),
+      provider: 'Neon'
+    };
   } catch (e) {
-    report.supabase = { reachable: false, error: e.message };
+    report.db = { reachable: false, error: e.message };
   }
 
   res.json({ status: 'debug_complete', report });
+});
+
+// AUTH REGISTRATION — creates user in Neon for CredentialsProvider
+app.post('/api/auth/register', async (req, res) => {
+  const { email, password, name } = req.body;
+  const bcrypt = require('bcryptjs');
+
+  if (!email || !password) {
+    return res.status(400).json({ error: 'Email and password are required' });
+  }
+
+  try {
+    // Check if user exists
+    const [existing] = await sql`SELECT * FROM users WHERE email = ${email}`;
+    if (existing) {
+      return res.status(400).json({ error: 'User already exists' });
+    }
+
+    // Hash password
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    // Insert user
+    const [newUser] = await sql`
+      INSERT INTO users (email, password, name, created_at)
+      VALUES (${email}, ${hashedPassword}, ${name || null}, ${new Date()})
+      RETURNING id, email, name
+    `;
+
+    res.status(201).json({ message: 'User created successfully', user: newUser });
+  } catch (err) {
+    console.error('Registration error:', err);
+    res.status(500).json({ error: 'Failed to create user' });
+  }
+});
+
+// GET CURRENT USER PROFILE
+app.get('/api/me', authenticateSession, async (req, res) => {
+  try {
+    const [user] = await sql`
+      SELECT id, name, email, image, subscription_tier, credits_remaining, total_scripts, total_pins, created_at
+      FROM users
+      WHERE id = ${req.user.id}
+    `;
+
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    res.json(user);
+  } catch (err) {
+    console.error('Fetch profile error:', err);
+    res.status(500).json({ error: 'Failed to fetch profile' });
+  }
+});
+
+// UPDATE CURRENT USER PROFILE
+app.patch('/api/me', authenticateSession, async (req, res) => {
+  const { name } = req.body;
+  try {
+    const [updatedUser] = await sql`
+      UPDATE users
+      SET name = ${name || req.user.name}, updated_at = now()
+      WHERE id = ${req.user.id}
+      RETURNING id, name, email, image, subscription_tier, credits_remaining, total_scripts, total_pins
+    `;
+
+    res.json(updatedUser);
+  } catch (err) {
+    console.error('Update profile error:', err);
+    res.status(500).json({ error: 'Failed to update profile' });
+  }
 });
 
 // STEP-BY-STEP PIPELINE TESTER — hit with ?url=YOUR_TIKTOK_URL
@@ -224,18 +285,11 @@ app.post('/api/save-to-vault', async (req, res) => {
   }
 
   try {
-    const { data, error } = await supabase
-      .from('user_ads')
-      .insert({
-        user_id: userId,
-        title: title || 'Saved Ad',
-        video_url: videoUrl,
-        visual_dna: visualDna
-      })
-      .select()
-      .single();
-
-    if (error) throw error;
+    const [data] = await sql`
+      INSERT INTO ads (title, video_url, visual_dna, is_verified)
+      VALUES (${title || 'Saved Ad'}, ${videoUrl}, ${JSON.stringify(visualDna)}, true)
+      RETURNING *
+    `;
 
     res.json({ success: true, ad: data });
   } catch (error) {
@@ -254,20 +308,14 @@ app.get('/api/user-ads', async (req, res) => {
   }
 
   try {
-    let query = supabase
-      .from('user_ads')
-      .select('*')
-      .eq('user_id', userId)
-      .order('created_at', { ascending: false });
-
+    let ads;
     if (search) {
-      query = query.ilike('title', `%${search}%`);
+      ads = await sql`SELECT * FROM user_ads WHERE user_id = ${userId} AND (title ILIKE ${`%${search}%`} OR niche ILIKE ${`%${search}%`}) ORDER BY created_at DESC`;
     } else if (niche && niche !== 'all') {
-      query = query.eq('niche', niche);
+      ads = await sql`SELECT * FROM user_ads WHERE user_id = ${userId} AND niche = ${niche} ORDER BY created_at DESC`;
+    } else {
+      ads = await sql`SELECT * FROM user_ads WHERE user_id = ${userId} ORDER BY created_at DESC`;
     }
-
-    const { data: ads, error } = await query;
-    if (error) throw error;
 
     const formattedAds = ads.map(ad => ({
       id: ad.id,
@@ -412,7 +460,7 @@ app.post('/api/generate-script', async (req, res) => {
 
     // If adId is provided, fetch the winning ad and use its DNA
     if (adId) {
-      const { data: adData } = await supabase.from('ads').select('*').eq('id', adId).single();
+      const [adData] = await sql`SELECT * FROM ads WHERE id = ${adId}`;
 
       if (adData) {
         // PRIORITY 1: Use pre-processed Visual DNA (Instant & 100% Reliable)
@@ -488,7 +536,7 @@ app.post('/api/generate-script', async (req, res) => {
             
             **CTA Scene (15s+):**
             ${visualAnalysis.cta_scene.closing_visual}
-            CTA Presentation: ${visualAnalysis.cta_scene.cta_presentation}
+            CTA Presentation: ${visualAnalysis.cta_cta_presentation}
             
             **Overall Style:**
             Lighting: ${visualAnalysis.overall_style.lighting}
@@ -606,28 +654,25 @@ app.post('/api/generate-script', async (req, res) => {
     const scriptContent = fullGuide.summary || fullGuide; // Backward compatibility for DB save
 
     // Save to Supabase if connected
-    if (supabase) {
+    if (sql) {
       try {
-        await supabase.from('scripts').insert([
-          {
-            product_name: productName,
-            description: description,
-            script_content: scriptContent,
-            created_at: new Date()
-          }
-        ]);
+        await sql`
+          INSERT INTO scripts (product_name, description, script_content, created_at)
+          VALUES (${productName}, ${description}, ${JSON.stringify(scriptContent)}, ${new Date()})
+        `;
       } catch (dbErr) {
-        console.error('Failed to save to Supabase:', dbErr);
+        console.error('Failed to save to DB:', dbErr);
       }
     }
 
     // Increment total_scripts in profiles
-    if (supabase && req.body.userId) {
+    if (sql && req.body.userId) {
       try {
-        await supabase.rpc('increment_profile_stat', {
-          user_id: req.body.userId,
-          stat_column: 'total_scripts'
-        });
+        await sql`
+          UPDATE users 
+          SET total_scripts = total_scripts + 1
+          WHERE id = ${req.body.userId}
+        `;
       } catch (statErr) {
         console.error('Failed to increment scripts stat:', statErr);
       }
@@ -657,20 +702,29 @@ app.get('/api/ads', async (req, res) => {
   const { niche, search, verifiedOnly } = req.query;
 
   try {
-    let query = supabase.from('ads').select('*').order('created_at', { ascending: false });
+    let ads;
+    let query = `SELECT * FROM ads`;
+    const params = [];
+    const conditions = [];
 
     if (verifiedOnly === 'true') {
-      query = query.eq('is_verified', true);
+      conditions.push(`is_verified = TRUE`);
     }
 
     if (search) {
-      query = query.or(`title.ilike.%${search}%,niche.ilike.%${search}%`);
+      conditions.push(`(title ILIKE $${params.length + 1} OR niche ILIKE $${params.length + 2})`);
+      params.push(`%${search}%`, `%${search}%`);
     } else if (niche && niche !== 'all') {
-      query = query.eq('niche', niche);
+      conditions.push(`niche = $${params.length + 1}`);
+      params.push(niche);
     }
 
-    const { data: ads, error } = await query;
-    if (error) throw error;
+    if (conditions.length > 0) {
+      query += ` WHERE ${conditions.join(' AND ')}`;
+    }
+    query += ` ORDER BY created_at DESC`;
+
+    ads = await sql.unsafe(query, params);
 
     const formattedAds = ads.map(ad => ({
       id: ad.id,
@@ -703,7 +757,7 @@ app.post('/api/script-strategy-questions', async (req, res) => {
     let visualContext = "";
 
     if (adId) {
-      const { data } = await supabase.from('ads').select('*').eq('id', adId).single();
+      const [data] = await sql`SELECT * FROM ads WHERE id = ${adId}`;
       if (data) adData = data;
       console.log(`🧠 Remixing Ad Library Video: ${adData.title}`);
 
@@ -780,35 +834,39 @@ app.post('/api/creative-director-chat', async (req, res) => {
     You have just PERSONALLY deconstructed the video frames and analyzed the psychological DNA. 
     We are in a private "Lounge Session." You aren't an AI; you're a mentor who has built 8-figure brands.
     
-    ${isRoastMode ? 'YOUR PERSONA: ROAST MODE. Be direct, ruthless, and bored of excuses. If the ad is bad, say it. If the hook is weak, kill it. No sugar-coating.' : 'YOUR PERSONA: Sophisticated Partner. Direct but collaborative. Ambitious and insightful.'}
+    ${isRoastMode ? 'YOUR PERSONA: ROAST MODE. Be direct, ruthless, and bored of excuses. No sugar-coating.' : 'YOUR PERSONA: Sophisticated Growth Partner. Direct, high-stakes, and elite.'}
 
-    THE DATA (I just watched this and found):
-    - Awareness: ${dna.awareness_level}
-    - Trigger: ${dna.psychology_breakdown.trigger}
-    - Style: ${dna.vibe_assessment?.style || 'Guerilla UGC'}
+    THE DECONSTRUCTED DNA (I just watched this and found):
+    - **Niche**: ${dna.niche || 'General'}
+    - **Level of Awareness**: ${dna.awareness_level || 'Unknown'}
+    - **The Big Idea**: "${dna.big_idea || 'Not identified'}"
+    - **The Visual Hook**: ${dna.hook_analysis?.critique || 'No visual hook data'}
+    - **The Spoken Hook (Audio)**: ${dna.transcript ? `"${dna.transcript.substring(0, 150)}..."` : 'No transcript data'}
+    - **Pacing & Retention**: ${dna.pacing_analysis?.critique || 'Standard pacing'}
+    - **Psychological Trigger**: ${dna.psychology_breakdown?.trigger || 'General curiosity'}
+    - **Actionable Directions**: ${dna.actionable_directions ? dna.actionable_directions.join(', ') : 'Maintain high energy'}
     
-    The Rulebook (VETERAN CD ONLY):
-    1. **Structural Arbitrage**: Your primary job is to treat the analyzed video as a "Psychological Blueprint." The user might want to steal a winning 'Hook' from a Toy ad and use it for a 'Kitchen Gadget.' You MUST facilitate this "Cross-Niche" transfer.
-    2. **The "Anchor" Protocol**: You don't know about the user's product yet. In the intro, you MUST ask for their "Product Anchor" (what they are selling).
-    3. **The "Steal & Adapt" Law**: Identify the "Secret Sauce" (e.g., a specific visual gesture or audio trigger) and explain how to apply it to *any* product the user mentions.
-    4. **Friction Finder**: If the user is stuck, give 3 "Niche-Agnostic" hook ideas that work for their product based on the analyzed DNA.
+    THE DIRECTOR'S RULEBOOK:
+    1. **NO GENERIC ADVICE**: Do not use generic words like "authenticity" or "engagement" unless they are tied to a specific frame or quote from the data above.
+    2. **CITE THE DNA**: In your memo, reference specific elements from 'THE DECONSTRUCTED DNA' (e.g., "The big idea of [Big Idea] is why this works...").
+    3. **Structural Arbitrage**: Your job is to treat the analyzed video as a "Psychological Blueprint." Facilitate "Cross-Niche" transfer.
+    4. **The Anchor Protocol**: In the intro, you MUST ask for their "Product Anchor" (what they are selling).
     
     ${isIntro ? `
     INSTRUCTION: Opening message. Deliver a "DIRECTOR'S STRATEGIC MEMO":
     
-    1. **The Verdict**: 1-sentence assessment of why this video is a winner/burner.
-    2. **The Stealable Pattern**: Identify the one psychological trigger that is "Niche-Agnostic" (can be stolen for any product).
-    3. **The Bridge**: Briefly explain how this pattern works for this ${dna.niche || 'specific'} niche.
+    1. **The Verdict**: 1-sentence sharp assessment of why THIS specific video is a winner. Reference the Big Idea or Visual Hook.
+    2. **The Stealable Pattern**: Identify the ONE psychological trigger from this video that can be stolen for *any* product.
+    3. **The Bridge**: Briefly explain how this pattern works for this ${dna.niche || 'specific'} niche using a detail from the transcript or visual critique.
     4. **The Anchor Request**: End with: "I've deconstructed the blueprint. Give me your **Product Anchor** (what are you selling?)—and tell me if you want to stay in this niche or 'Arbitrage' this hook to something completely different."
-    
-    Be direct, high-stakes, and elite.` : 'Chat with them like a partner. Act as their "Structural Arbitrage" expert. Bridge the analyzed DNA to whatever product they mention.'}
+    ` : 'Chat with them like a partner. Act as their "Structural Arbitrage" expert. Bridge the analyzed DNA to whatever product they mention.'}
     `;
 
     let completion;
     const MAX_RETRIES = 3;
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
       try {
-        console.log(`💬 Generating script (attempt ${attempt}/${MAX_RETRIES})...`);
+        console.log(`💬 Generating script(attempt ${attempt} / ${MAX_RETRIES})...`);
         completion = await groq.chat.completions.create({
           messages: [
             { role: "system", content: systemPrompt },
@@ -846,31 +904,20 @@ app.post('/api/save-lounge-session', async (req, res) => {
     let result;
     if (sessionId) {
       // Update existing session
-      const { data, error } = await supabase
-        .from('lounge_sessions')
-        .update({ messages, updated_at: new Date() })
-        .eq('id', sessionId)
-        .eq('user_id', userId)
-        .select()
-        .single();
-      if (error) throw error;
+      const [data] = await sql`
+        UPDATE lounge_sessions 
+        SET messages = ${JSON.stringify(messages)}, updated_at = ${new Date()}
+        WHERE id = ${sessionId} AND user_id = ${userId}
+        RETURNING *
+  `;
       result = data;
     } else {
       // Create new session
-      const { data, error } = await supabase
-        .from('lounge_sessions')
-        .insert([{
-          user_id: userId,
-          title: title || `Analysis: ${videoUrl.substring(0, 30)}...`,
-          video_url: videoUrl,
-          dna,
-          messages,
-          created_at: new Date(),
-          updated_at: new Date()
-        }])
-        .select()
-        .single();
-      if (error) throw error;
+      const [data] = await sql`
+        INSERT INTO lounge_sessions(user_id, title, video_url, dna, messages, created_at, updated_at)
+        VALUES(${userId}, ${title || `Analysis: ${videoUrl.substring(0, 30)}...`}, ${videoUrl}, ${JSON.stringify(dna)}, ${JSON.stringify(messages)}, ${new Date()}, ${new Date()})
+        RETURNING *
+  `;
       result = data;
     }
     res.json(result);
@@ -885,31 +932,27 @@ app.get('/api/user-sessions', async (req, res) => {
   if (!userId) return res.status(400).json({ error: 'User ID is required' });
 
   try {
-    const { data, error } = await supabase
-      .from('lounge_sessions')
-      .select('id, title, video_url, created_at')
-      .eq('user_id', userId)
-      .order('updated_at', { ascending: false });
+    const data = await sql`
+      SELECT id, title, video_url, created_at 
+      FROM lounge_sessions 
+      WHERE user_id = ${userId} 
+      ORDER BY updated_at DESC
+  `;
 
-    if (error) throw error;
     res.json(data);
   } catch (error) {
     console.error('Fetch sessions error:', error);
-    res.status(500).json({ error: 'Failed to fetch sessions' });
+    res.status(500).json({ error: 'Failed to fetch session' });
   }
 });
 
 app.get('/api/lounge-session/:id', async (req, res) => {
-  const { id } = req.params;
   try {
-    const { data, error } = await supabase
-      .from('lounge_sessions')
-      .select('*')
-      .eq('id', id)
-      .single();
+    const { id: sessionId } = req.params;
+    const [session] = await sql`SELECT * FROM lounge_sessions WHERE id = ${sessionId}`;
 
-    if (error) throw error;
-    res.json(data);
+    if (!session) return res.status(404).json({ error: 'Session not found' });
+    res.json(session);
   } catch (error) {
     console.error('Fetch session error:', error);
     res.status(500).json({ error: 'Failed to fetch session' });
@@ -925,31 +968,31 @@ app.post('/api/generate-final-script', async (req, res) => {
     const finalPrompt = `AS THE ELITE CREATIVE DIRECTOR, SYNTHESIZE THIS MASTERMIND SESSION INTO A PRODUCTION GUIDE.
     
     ORIGINAL DNA:
-    - Awareness Level: ${dna.awareness_level}
-    - Big Idea: ${dna.big_idea}
-    - Critique Hook: ${dna.hook_analysis.critique}
+  - Awareness Level: ${dna.awareness_level}
+- Big Idea: ${dna.big_idea}
+- Critique Hook: ${dna.hook_analysis.critique}
     
-    CHAT CONTEXT (THE USER PREFERENCES):
-    ${messages.map(m => `${m.role.toUpperCase()}: ${m.content}`).join('\n')}
+    CHAT CONTEXT(THE USER PREFERENCES):
+  ${messages.map(m => `${m.role.toUpperCase()}: ${m.content}`).join('\n')}
     
-    INSTRUCTION: 
-    - Create an Agency-Grade Viral Production Guide.
+    INSTRUCTION:
+  - Create an Agency - Grade Viral Production Guide.
     - Replicate the psychological energy of the original DNA but adapt for the new product using the chat context.
-    - The script must be high-AOV, high-RECOUP focused.
+    - The script must be high - AOV, high - RECOUP focused.
     
     Output JSON only:
-    {
-        "title": "Viral Script Name",
-        "concept": "Brief concept summary",
-        "awareness_level": "${dna.awareness_level}",
+{
+  "title": "Viral Script Name",
+    "concept": "Brief concept summary",
+      "awareness_level": "${dna.awareness_level}",
         "big_idea": "Synthesis of the chat + DNA",
-        "shot_list": [
+          "shot_list": [
             { "time": "0-3s", "visual": "...", "audio": "...", "overlay": "..." },
             { "time": "3-8s", "visual": "...", "audio": "...", "overlay": "..." },
             { "time": "8-15s", "visual": "...", "audio": "...", "overlay": "..." },
             { "time": "15s+", "visual": "...", "audio": "...", "overlay": "..." }
-        ]
-    }`;
+          ]
+} `;
 
     const completion = await groq.chat.completions.create({
       messages: [{ role: "user", content: finalPrompt }],
@@ -960,13 +1003,20 @@ app.post('/api/generate-final-script', async (req, res) => {
     const script = JSON.parse(completion.choices[0]?.message?.content || '{}');
 
     // Save to Vault
-    if (supabase && userId) {
-      await supabase.from('scripts').insert([{
-        user_id: userId,
-        title: script.title,
-        script_content: script,
-        created_at: new Date()
-      }]);
+    if (sql && userId) {
+      // 1. Save Script
+      const [newScript] = await sql`
+        INSERT INTO scripts(user_id, title, script_content)
+VALUES(${userId}, ${script.title}, ${JSON.stringify(script)})
+RETURNING *
+  `;
+
+      // 2. Increment stats
+      await sql`
+        UPDATE users
+        SET total_scripts = total_scripts + 1
+        WHERE id = ${userId}
+`;
     }
 
     res.json(script);
@@ -977,17 +1027,15 @@ app.post('/api/generate-final-script', async (req, res) => {
 });
 
 app.listen(port, async () => {
-  console.log(`Server running on port ${port}`);
+  console.log(`Server running on port ${port} `);
 
-  if (supabase) {
-    try {
-      const { count, error } = await supabase.from('ads').select('*', { count: 'exact', head: true });
-      if (error) console.error('❌ Startup DB Connection Failed:', error.message);
-      else console.log(`✅ Startup DB Connection Successful! Ads in DB: ${count}`);
-    } catch (err) {
-      console.error('❌ Startup DB Connection Error:', err.message);
+  try {
+    const isHealthy = await testConnection();
+    if (isHealthy) {
+      const countRes = await sql`SELECT count(*) FROM ads`;
+      console.log(`✅ Startup Neon Connection Successful! Ads in DB: ${countRes[0].count} `);
     }
-  } else {
-    console.warn('⚠️ Supabase client not initialized');
+  } catch (err) {
+    console.error('❌ Startup Database connection failed:', err.message);
   }
 });
