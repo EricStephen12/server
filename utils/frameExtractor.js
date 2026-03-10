@@ -140,7 +140,7 @@ async function extractFrames(videoUrl, manualTimestamps = null) {
     if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
 
     const videoId = Date.now();
-    const videoPath = path.join(tempDir, `socially_video_${videoId}.mp4`);
+    const videoPath = path.join(tempDir, `eixora_video_${videoId}.mp4`);
 
     try {
         console.log(`🎥 Initiating Elite Extraction for: ${videoUrl}`);

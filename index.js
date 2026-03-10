@@ -175,7 +175,7 @@ app.post('/api/auth/register', async (req, res) => {
 app.get('/api/me', authenticateSession, async (req, res) => {
   try {
     const [user] = await sql`
-      SELECT id, name, email, image, subscription_tier, credits_remaining, total_scripts, total_pins, created_at
+      SELECT id, name, email, image, subscription_tier as plan_type, subscription_tier, credits_remaining, total_scripts, total_pins, total_videos_analyzed, created_at
       FROM users
       WHERE id = ${req.user.id}
     `;
@@ -291,6 +291,9 @@ app.post('/api/save-to-vault', async (req, res) => {
       RETURNING *
     `;
 
+    // Increment total_pins
+    await sql`UPDATE users SET total_pins = total_pins + 1 WHERE id = ${userId}`;
+
     res.json({ success: true, ad: data });
   } catch (error) {
     console.error('Save to vault error:', error);
@@ -377,6 +380,16 @@ app.post('/api/analyze-video-url', async (req, res) => {
     analysis.transcript = transcript;
 
     console.log('✅ Masterclass DNA Extraction Complete');
+
+    // Increment total_videos_analyzed
+    if (userId) {
+      try {
+        await sql`UPDATE users SET total_videos_analyzed = total_videos_analyzed + 1 WHERE id = ${userId}`;
+      } catch (err) {
+        console.warn('Failed to increment total_videos_analyzed:', err.message);
+      }
+    }
+
     res.json({
       success: true,
       analysis,
@@ -424,8 +437,14 @@ app.post('/api/analyze-video', upload.single('video'), async (req, res) => {
     console.log('🧠 Auditing Multi-Modal Mastery...');
     const analysis = await analyzeVideoFrames(frames, 'Uploaded Draft Analysis', transcript);
 
-    // Fuse
-    analysis.transcript = transcript;
+    // Increment total_videos_analyzed
+    if (req.body.userId) {
+      try {
+        await sql`UPDATE users SET total_videos_analyzed = total_videos_analyzed + 1 WHERE id = ${req.body.userId}`;
+      } catch (err) {
+        console.warn('Failed to increment total_videos_analyzed:', err.message);
+      }
+    }
 
     res.json({
       success: true,
