@@ -1398,17 +1398,20 @@ app.post('/api/webhooks/gumroad', async (req, res) => {
       return res.status(200).json({ status: 'ignored', reason: 'user not found' });
     }
 
-    // Handle refund
-    if (refunded === 'true' || refunded === true) {
-      console.log(`💸 Refund detected for ${email}, reverting to free`);
+    // Handle refund or cancellation
+    const isRefunded = refunded === 'true' || refunded === true;
+    const isCancelled = req.body.subscription_cancelled_at || req.body.is_subscription_ended === 'true' || req.body.is_subscription_ended === true;
+
+    if (isRefunded || isCancelled) {
+      console.log(`💸 Downgrade detected for ${email} (Refund: ${isRefunded}, Cancel: ${isCancelled}), reverting to free`);
       await sql`
         UPDATE users
         SET subscription_tier = 'free',
-            subscription_status = 'refunded',
+            subscription_status = ${isRefunded ? 'refunded' : 'cancelled'},
             updated_at = NOW()
         WHERE id = ${user.id}
       `;
-      return res.status(200).json({ status: 'refunded' });
+      return res.status(200).json({ status: 'downgraded', reason: isRefunded ? 'refund' : 'cancel' });
     }
 
     // Determine plan from product_permalink or product_name
