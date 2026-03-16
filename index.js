@@ -12,6 +12,7 @@ const { analyzeVideoFrames } = require('./utils/visionAnalyzer');
 const { transcribeAudio } = require('./utils/audioTranscriber');
 const { sql, testConnection } = require('./db/index');
 const authenticateSession = require('./middleware/auth');
+require('./tier_fix');
 
 dotenv.config();
 
@@ -182,7 +183,28 @@ app.get('/api/me', authenticateSession, async (req, res) => {
     `;
 
     if (!user) return res.status(404).json({ error: 'User not found' });
-    res.json(user);
+
+    // Fetch monthly usage
+    const oneMonthAgo = new Date();
+    oneMonthAgo.setDate(oneMonthAgo.getDate() - 30);
+
+    const [{ scanCount }] = await sql`
+      SELECT count(*)::int as "scanCount" FROM lounge_sessions 
+      WHERE user_id = ${req.user.id} AND updated_at > ${oneMonthAgo}
+    `;
+
+    const [{ scriptCount }] = await sql`
+      SELECT count(*)::int as "scriptCount" FROM scripts 
+      WHERE user_id = ${req.user.id} AND created_at > ${oneMonthAgo}
+    `;
+
+    res.json({
+      ...user,
+      monthly_usage: {
+        scans: scanCount,
+        scripts: scriptCount
+      }
+    });
   } catch (err) {
     console.error('Fetch profile error:', err);
     res.status(500).json({ error: 'Failed to fetch profile' });
@@ -343,6 +365,40 @@ app.get('/api/user-ads', async (req, res) => {
   }
 });
 
+// Helper to check monthly limits for free users
+async function checkLimits(userId, type) {
+  try {
+    const [user] = await sql`SELECT subscription_tier FROM users WHERE id = ${userId}`;
+    const tier = user?.subscription_tier || 'free';
+
+    if (tier !== 'free') return { allowed: true };
+
+    const oneMonthAgo = new Date();
+    oneMonthAgo.setDate(oneMonthAgo.getDate() - 30);
+
+    if (type === 'scan') {
+      const [{ count }] = await sql`
+        SELECT count(*)::int FROM lounge_sessions 
+        WHERE user_id = ${userId} AND updated_at > ${oneMonthAgo}
+      `;
+      return { allowed: count < 3, count, limit: 3 };
+    }
+
+    if (type === 'script') {
+      const [{ count }] = await sql`
+        SELECT count(*)::int FROM scripts 
+        WHERE user_id = ${userId} AND created_at > ${oneMonthAgo}
+      `;
+      return { allowed: count < 3, count, limit: 3 };
+    }
+
+    return { allowed: true };
+  } catch (err) {
+    console.error('Limit check error:', err);
+    return { allowed: true }; // Allow on error to avoid blocking users
+  }
+}
+
 // STANDALONE VIDEO ANALYSIS ENDPOINT (URL Based)
 app.post('/api/analyze-video-url', async (req, res) => {
   const { videoUrl, userId } = req.body;
@@ -353,6 +409,18 @@ app.post('/api/analyze-video-url', async (req, res) => {
 
   if (!process.env.GROQ_API_KEY) {
     return res.status(503).json({ error: 'Groq API not configured' });
+  }
+
+  // Plan Gating: Check monthly scan limits for free users
+  if (userId) {
+    const limit = await checkLimits(userId, 'scan');
+    if (!limit.allowed) {
+      return res.status(403).json({
+        error: 'Monthly Scan Limit Reached',
+        details: `Free users are limited to 3 scans per month. You have used ${limit.count}/${limit.limit}. Please upgrade to lock in the Founding Rate!`,
+        upgradeRequired: true
+      });
+    }
   }
 
   try {
@@ -407,6 +475,203 @@ app.post('/api/analyze-video-url', async (req, res) => {
   }
 });
 
+// ============================================
+// BATCH URL PROCESSING (Agency Only)
+// ============================================
+app.post('/api/batch-analyze', authenticateSession, async (req, res) => {
+  const { urls } = req.body;
+
+  if (!urls || !Array.isArray(urls) || urls.length === 0) {
+    return res.status(400).json({ error: 'Please provide an array of URLs' });
+  }
+
+  if (urls.length > 10) {
+    return res.status(400).json({ error: 'Maximum 10 URLs per batch' });
+  }
+
+  // Check if user has agency plan
+  try {
+    const [user] = await sql`SELECT subscription_tier FROM users WHERE id = ${req.user.id}`;
+    if (!user || user.subscription_tier !== 'agency') {
+      return res.status(403).json({ error: 'Batch processing is an Agency plan feature. Please upgrade.' });
+    }
+  } catch (err) {
+    return res.status(500).json({ error: 'Could not verify subscription' });
+  }
+
+  console.log(`📦 Batch processing ${urls.length} URLs for user ${req.user.id}`);
+
+  const results = [];
+
+  for (let i = 0; i < urls.length; i++) {
+    const videoUrl = urls[i].trim();
+    if (!videoUrl) {
+      results.push({ url: videoUrl, success: false, error: 'Empty URL' });
+      continue;
+    }
+
+    try {
+      console.log(`📦 [${i + 1}/${urls.length}] Processing: ${videoUrl.substring(0, 60)}...`);
+      const { frames, audioPath } = await extractFrames(videoUrl);
+
+      if (!frames || frames.length === 0) {
+        results.push({ url: videoUrl, success: false, error: 'No frames extracted' });
+        continue;
+      }
+
+      let transcript = "";
+      if (audioPath) {
+        try {
+          transcript = await transcribeAudio(audioPath);
+        } catch (err) {
+          console.warn(`⚠️ Transcription failed for ${videoUrl}:`, err.message);
+        }
+      }
+
+      const analysis = await analyzeVideoFrames(frames, `Analysis of: ${videoUrl}`, transcript);
+      analysis.transcript = transcript;
+
+      results.push({
+        url: videoUrl,
+        success: true,
+        analysis,
+        framesAnalyzed: frames.length,
+        hasAudio: !!transcript
+      });
+
+      // Increment stats
+      try {
+        await sql`UPDATE users SET total_videos_analyzed = total_videos_analyzed + 1 WHERE id = ${req.user.id}`;
+      } catch (err) {
+        console.warn('Failed to increment stat:', err.message);
+      }
+
+    } catch (error) {
+      console.error(`Failed to analyze ${videoUrl}:`, error.message);
+      results.push({ url: videoUrl, success: false, error: error.message });
+    }
+  }
+
+  const successCount = results.filter(r => r.success).length;
+  console.log(`📦 Batch complete: ${successCount}/${urls.length} successful`);
+
+  res.json({
+    success: true,
+    total: urls.length,
+    completed: successCount,
+    failed: urls.length - successCount,
+    results
+  });
+});
+
+// ============================================
+// EXPORT DNA REPORT (Agency Only)
+// ============================================
+app.post('/api/export-report', authenticateSession, async (req, res) => {
+  const { analysis, videoUrl } = req.body;
+
+  try {
+    const [user] = await sql`SELECT subscription_tier FROM users WHERE id = ${req.user.id}`;
+    if (!user || user.subscription_tier !== 'agency') {
+      return res.status(403).json({ error: 'Report export is an Agency plan feature. Please upgrade.' });
+    }
+  } catch (err) {
+    return res.status(500).json({ error: 'Could not verify subscription' });
+  }
+
+  if (!analysis) {
+    return res.status(400).json({ error: 'No analysis data provided' });
+  }
+
+  try {
+    const report = [
+      '═══════════════════════════════════════════',
+      '         EIXORA — VIRAL DNA REPORT         ',
+      '═══════════════════════════════════════════',
+      '',
+      `Video: ${videoUrl || 'N/A'}`,
+      `Generated: ${new Date().toISOString()}`,
+      '',
+      '───────────────────────────────────────────',
+      'PERFORMANCE METRICS',
+      '───────────────────────────────────────────',
+      `Hook Power:        ${analysis.metrics?.hook_power || 'N/A'}/10`,
+      `Retention Score:   ${analysis.metrics?.retention_score || 'N/A'}/10`,
+      `CTA Strength:      ${analysis.metrics?.conversion_trigger || 'N/A'}/10`,
+      '',
+      '───────────────────────────────────────────',
+      'THE BIG IDEA',
+      '───────────────────────────────────────────',
+      analysis.big_idea || 'N/A',
+      '',
+      '───────────────────────────────────────────',
+      'HOOK ANALYSIS',
+      '───────────────────────────────────────────',
+      analysis.hook_analysis?.critique || 'N/A',
+      '',
+      '───────────────────────────────────────────',
+      'TRANSCRIPT',
+      '───────────────────────────────────────────',
+      analysis.transcript || 'No transcript available',
+      '',
+      '═══════════════════════════════════════════',
+      '         Generated by EIXORA by EXRICX     ',
+      '═══════════════════════════════════════════',
+    ].join('\n');
+
+    res.setHeader('Content-Type', 'text/plain');
+    res.setHeader('Content-Disposition', `attachment; filename="eixora-dna-report-${Date.now()}.txt"`);
+    res.send(report);
+  } catch (err) {
+    console.error('Export report error:', err);
+    res.status(500).json({ error: 'Failed to generate report' });
+  }
+});
+
+// ============================================
+// PLAN CHECK ENDPOINT
+// ============================================
+app.get('/api/plan-check', authenticateSession, async (req, res) => {
+  try {
+    const [user] = await sql`SELECT subscription_tier, subscription_status FROM users WHERE id = ${req.user.id}`;
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    const tier = user.subscription_tier || 'free';
+    const limits = {
+      free: { scans_per_month: 3, scripts_per_month: 3, batch: false, export: false },
+      founding: { scans_per_month: -1, scripts_per_month: -1, batch: false, export: false },
+      agency: { scans_per_month: -1, scripts_per_month: -1, batch: true, export: true },
+    };
+
+    // Fetch current monthly usage
+    const oneMonthAgo = new Date();
+    oneMonthAgo.setDate(oneMonthAgo.getDate() - 30);
+
+    const [{ scanCount }] = await sql`
+      SELECT count(*)::int as "scanCount" FROM lounge_sessions 
+      WHERE user_id = ${req.user.id} AND updated_at > ${oneMonthAgo}
+    `;
+
+    const [{ scriptCount }] = await sql`
+      SELECT count(*)::int as "scriptCount" FROM scripts 
+      WHERE user_id = ${req.user.id} AND created_at > ${oneMonthAgo}
+    `;
+
+    res.json({
+      tier,
+      status: user.subscription_status || 'inactive',
+      limits: limits[tier] || limits.free,
+      usage: {
+        scans: scanCount,
+        scripts: scriptCount
+      }
+    });
+  } catch (err) {
+    console.error('Plan check error:', err);
+    res.status(500).json({ error: 'Plan check failed' });
+  }
+});
+
 app.post('/api/analyze-video', upload.single('video'), async (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: 'No video file provided' });
@@ -414,6 +679,18 @@ app.post('/api/analyze-video', upload.single('video'), async (req, res) => {
 
   if (!process.env.GROQ_API_KEY) {
     return res.status(503).json({ error: 'Groq API not configured' });
+  }
+
+  // Plan Gating: Check monthly scan limits for free users
+  if (req.body.userId) {
+    const limit = await checkLimits(req.body.userId, 'scan');
+    if (!limit.allowed) {
+      return res.status(403).json({
+        error: 'Monthly Scan Limit Reached',
+        details: `Free users are limited to 3 scans per month. You have used ${limit.count}/${limit.limit}. Please upgrade to lock in the Founding Rate!`,
+        upgradeRequired: true
+      });
+    }
   }
 
   try {
@@ -472,6 +749,18 @@ app.post('/api/generate-script', async (req, res) => {
 
   if (!groq) {
     return res.status(503).json({ error: 'AI service not available (API Key Missing)' });
+  }
+
+  // Plan Gating
+  if (req.body.userId) {
+    const limit = await checkLimits(req.body.userId, 'script');
+    if (!limit.allowed) {
+      return res.status(403).json({
+        error: 'Monthly Script Limit Reached',
+        details: `Free users are limited to 3 scripts per month. You have used ${limit.count}/${limit.limit}. Please upgrade to lock in the Founding Rate!`,
+        upgradeRequired: true
+      });
+    }
   }
 
   try {
@@ -1122,9 +1411,12 @@ app.post('/api/webhooks/gumroad', async (req, res) => {
       return res.status(200).json({ status: 'refunded' });
     }
 
-    // Determine plan from product_permalink
-    let subscriptionTier = 'pro'; // default to pro
-    if (product_permalink && product_permalink.toLowerCase().includes('agency')) {
+    // Determine plan from product_permalink or product_name
+    let subscriptionTier = 'founding'; // default to founding
+    const nameLower = (product_name || '').toLowerCase();
+    const permalinkLower = (product_permalink || '').toLowerCase();
+
+    if (nameLower.includes('agency') || permalinkLower.includes('agency')) {
       subscriptionTier = 'agency';
     }
 
@@ -1137,7 +1429,7 @@ app.post('/api/webhooks/gumroad', async (req, res) => {
       WHERE id = ${user.id}
     `;
 
-    console.log(`✅ User ${email} upgraded to ${subscriptionTier} (Sale: ${sale_id})`);
+    console.log(`✅ User ${email} upgraded to ${subscriptionTier} | Sale: ${sale_id} | Sub: ${subscription_id || 'N/A'}`);
     return res.status(200).json({ status: 'success', tier: subscriptionTier });
 
   } catch (err) {

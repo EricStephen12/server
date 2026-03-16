@@ -11,10 +11,10 @@ if (!connectionString) {
 
 // Neon serverless connection
 const sql = postgres(connectionString, {
-    ssl: 'require',
+    ssl: { rejectUnauthorized: false }, // Avoid cert issues locally
     max: 10,
     idle_timeout: 60,
-    connect_timeout: 30,
+    connect_timeout: 60, // Increased timeout
 });
 
 /**
