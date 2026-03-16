@@ -24,6 +24,7 @@ const upload = multer({ dest: 'uploads/' });
 // Middleware
 app.use(cors());
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
 // Neon Database Connection (Postgres)
@@ -1073,6 +1074,75 @@ RETURNING *
   } catch (error) {
     console.error('Script generation error:', error);
     res.status(500).json({ error: 'Failed' });
+  }
+});
+
+// ============================================
+// GUMROAD PING WEBHOOK
+// ============================================
+app.post('/api/webhooks/gumroad', async (req, res) => {
+  try {
+    const {
+      email,
+      product_permalink,
+      subscription_id,
+      is_recurring_charge,
+      refunded,
+      sale_id,
+      price,
+      product_name,
+      test: isTest
+    } = req.body;
+
+    console.log(`🔔 Gumroad Ping received: ${product_name || product_permalink} | ${email} | Sale: ${sale_id}`);
+
+    if (!email) {
+      console.warn('Gumroad Ping: No email in payload');
+      return res.status(200).json({ status: 'ignored', reason: 'no email' });
+    }
+
+    // Find user by email
+    const [user] = await sql`SELECT id, subscription_tier FROM users WHERE email = ${email}`;
+
+    if (!user) {
+      console.warn(`Gumroad Ping: No user found for email ${email}`);
+      return res.status(200).json({ status: 'ignored', reason: 'user not found' });
+    }
+
+    // Handle refund
+    if (refunded === 'true' || refunded === true) {
+      console.log(`💸 Refund detected for ${email}, reverting to free`);
+      await sql`
+        UPDATE users
+        SET subscription_tier = 'free',
+            subscription_status = 'refunded',
+            updated_at = NOW()
+        WHERE id = ${user.id}
+      `;
+      return res.status(200).json({ status: 'refunded' });
+    }
+
+    // Determine plan from product_permalink
+    let subscriptionTier = 'pro'; // default to pro
+    if (product_permalink && product_permalink.toLowerCase().includes('agency')) {
+      subscriptionTier = 'agency';
+    }
+
+    // Update user subscription
+    await sql`
+      UPDATE users
+      SET subscription_tier = ${subscriptionTier},
+          subscription_status = 'active',
+          updated_at = NOW()
+      WHERE id = ${user.id}
+    `;
+
+    console.log(`✅ User ${email} upgraded to ${subscriptionTier} (Sale: ${sale_id})`);
+    return res.status(200).json({ status: 'success', tier: subscriptionTier });
+
+  } catch (err) {
+    console.error('Gumroad Webhook Error:', err);
+    return res.status(200).json({ status: 'error', message: err.message });
   }
 });
 
