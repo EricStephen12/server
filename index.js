@@ -1367,6 +1367,190 @@ RETURNING *
 });
 
 // ============================================
+// COMPETITOR SPY (Founding+ Only)
+// ============================================
+app.post('/api/competitor-spy', authenticateSession, async (req, res) => {
+  const { profileUrl } = req.body;
+
+  if (!profileUrl) {
+    return res.status(400).json({ error: 'TikTok profile URL or username is required' });
+  }
+
+  // Check tier - must be founding or agency
+  try {
+    const [user] = await sql`SELECT subscription_tier FROM users WHERE id = ${req.user.id}`;
+    if (!user || user.subscription_tier !== 'agency') {
+      return res.status(403).json({ error: 'Competitor Spy is an Agency plan feature. Please upgrade to Agency.' });
+    }
+  } catch (err) {
+    return res.status(500).json({ error: 'Could not verify subscription' });
+  }
+
+  if (!process.env.APIFY_API_TOKEN) {
+    return res.status(503).json({ error: 'Scraping service not configured' });
+  }
+
+  try {
+    // Extract username from URL or use raw input
+    let username = profileUrl.trim();
+    if (username.includes('tiktok.com/')) {
+      const match = username.match(/@([a-zA-Z0-9_.]+)/);
+      if (match) username = match[1];
+      else {
+        // Try extracting from path: tiktok.com/@username
+        const parts = username.split('/').filter(Boolean);
+        const last = parts[parts.length - 1];
+        username = last.startsWith('@') ? last.slice(1) : last;
+      }
+    }
+    username = username.replace('@', '');
+
+    console.log(`🕵️ Competitor Spy: Scanning @${username}...`);
+
+    const apifyClient = new ApifyClient({ token: process.env.APIFY_API_TOKEN });
+
+    const run = await apifyClient.actor('clockworks/tiktok-scraper').call({
+      profiles: [`https://www.tiktok.com/@${username}`],
+      resultsPerPage: 20,
+      shouldDownloadVideos: false,
+      shouldDownloadCovers: true,
+    }, { timeout: 120 });
+
+    const { items } = await apifyClient.dataset(run.defaultDatasetId).listItems();
+
+    if (!items || items.length === 0) {
+      return res.json({ success: true, username, videos: [], message: 'No videos found for this profile.' });
+    }
+
+    // Sort by engagement (views) descending
+    const sorted = items
+      .filter(item => item.webVideoUrl || item.videoUrl)
+      .sort((a, b) => (b.playCount || 0) - (a.playCount || 0));
+
+    const videos = sorted.map(item => ({
+      id: item.id,
+      url: item.webVideoUrl || item.videoUrl,
+      thumbnail: item.videoMeta?.coverUrl || item.covers?.default || '',
+      caption: (item.text || '').substring(0, 200),
+      views: item.playCount || 0,
+      likes: item.diggCount || 0,
+      comments: item.commentCount || 0,
+      shares: item.shareCount || 0,
+      date: item.createTimeISO || item.createTime,
+      music: item.musicMeta?.musicName || '',
+    }));
+
+    console.log(`🕵️ Competitor Spy: Found ${videos.length} videos for @${username}`);
+
+    res.json({
+      success: true,
+      username,
+      videoCount: videos.length,
+      videos,
+    });
+
+  } catch (error) {
+    console.error('Competitor Spy error:', error);
+    res.status(500).json({ error: 'Failed to scan competitor profile', details: error.message });
+  }
+});
+
+// ============================================
+// TEAM MEMBERS (Agency Only)
+// ============================================
+
+// Invite a team member
+app.post('/api/team/invite', authenticateSession, async (req, res) => {
+  const { email } = req.body;
+
+  if (!email) return res.status(400).json({ error: 'Email is required' });
+
+  try {
+    const [user] = await sql`SELECT subscription_tier FROM users WHERE id = ${req.user.id}`;
+    if (!user || user.subscription_tier !== 'agency') {
+      return res.status(403).json({ error: 'Team Members is an Agency plan feature. Please upgrade.' });
+    }
+
+    // Check member limit (max 5)
+    const [{ count }] = await sql`SELECT count(*)::int FROM team_members WHERE owner_id = ${req.user.id}`;
+    if (count >= 5) {
+      return res.status(400).json({ error: 'Maximum 5 team members allowed on the Agency plan.' });
+    }
+
+    // Check if already invited
+    const [existing] = await sql`SELECT id FROM team_members WHERE owner_id = ${req.user.id} AND member_email = ${email}`;
+    if (existing) {
+      return res.status(400).json({ error: 'This email has already been invited.' });
+    }
+
+    // Check if user exists in system
+    const [existingUser] = await sql`SELECT id FROM users WHERE email = ${email}`;
+
+    const [member] = await sql`
+      INSERT INTO team_members (owner_id, member_email, member_user_id, status, joined_at)
+      VALUES (${req.user.id}, ${email}, ${existingUser?.id || null}, ${existingUser ? 'active' : 'pending'}, ${existingUser ? new Date() : null})
+      RETURNING *
+    `;
+
+    // If user exists, grant them agency-level access
+    if (existingUser) {
+      await sql`UPDATE users SET subscription_tier = 'agency' WHERE id = ${existingUser.id}`;
+    }
+
+    console.log(`👥 Team: ${req.user.email} invited ${email} (${existingUser ? 'active' : 'pending'})`);
+    res.json({ success: true, member });
+
+  } catch (error) {
+    console.error('Team invite error:', error);
+    res.status(500).json({ error: 'Failed to invite team member' });
+  }
+});
+
+// List team members
+app.get('/api/team/members', authenticateSession, async (req, res) => {
+  try {
+    const members = await sql`
+      SELECT tm.*, u.name as member_name, u.image as member_image
+      FROM team_members tm
+      LEFT JOIN users u ON tm.member_user_id = u.id
+      WHERE tm.owner_id = ${req.user.id}
+      ORDER BY tm.invited_at DESC
+    `;
+    res.json(members);
+  } catch (error) {
+    console.error('Fetch team error:', error);
+    res.status(500).json({ error: 'Failed to fetch team members' });
+  }
+});
+
+// Remove team member
+app.delete('/api/team/remove/:memberId', authenticateSession, async (req, res) => {
+  try {
+    const { memberId } = req.params;
+
+    // Get member info before deleting
+    const [member] = await sql`SELECT * FROM team_members WHERE id = ${memberId} AND owner_id = ${req.user.id}`;
+    if (!member) {
+      return res.status(404).json({ error: 'Team member not found' });
+    }
+
+    // Revoke their agency access if they were linked
+    if (member.member_user_id) {
+      await sql`UPDATE users SET subscription_tier = 'free' WHERE id = ${member.member_user_id}`;
+    }
+
+    await sql`DELETE FROM team_members WHERE id = ${memberId} AND owner_id = ${req.user.id}`;
+
+    console.log(`👥 Team: Removed ${member.member_email} from ${req.user.email}'s team`);
+    res.json({ success: true });
+
+  } catch (error) {
+    console.error('Remove team member error:', error);
+    res.status(500).json({ error: 'Failed to remove team member' });
+  }
+});
+
+// ============================================
 // GUMROAD PING WEBHOOK
 // ============================================
 app.post('/api/webhooks/gumroad', async (req, res) => {
