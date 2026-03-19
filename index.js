@@ -23,7 +23,16 @@ const port = process.env.PORT || 4000;
 const upload = multer({ dest: 'uploads/' });
 
 // Middleware
-app.use(cors());
+app.use(cors({
+  origin: [
+    'http://localhost:3000',
+    'http://localhost:3001',
+    process.env.FRONTEND_URL,
+    'https://eixora.vercel.app', // Adding common deployment URLs just in case
+    'https://client-phi-ivory.vercel.app'
+  ].filter(Boolean),
+  credentials: true
+}));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
