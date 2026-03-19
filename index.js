@@ -501,7 +501,7 @@ app.post('/api/batch-analyze', authenticateSession, async (req, res) => {
   // Check if user has agency plan
   try {
     const [user] = await sql`SELECT subscription_tier FROM users WHERE id = ${req.user.id}`;
-    if (!user || user.subscription_tier !== 'agency') {
+    if (!user || user.subscription_tier.toLowerCase() !== 'agency') {
       return res.status(403).json({ error: 'Batch processing is an Agency plan feature. Please upgrade.' });
     }
   } catch (err) {
@@ -510,22 +510,18 @@ app.post('/api/batch-analyze', authenticateSession, async (req, res) => {
 
   console.log(`📦 Batch processing ${urls.length} URLs for user ${req.user.id}`);
 
-  const results = [];
-
-  for (let i = 0; i < urls.length; i++) {
-    const videoUrl = urls[i].trim();
-    if (!videoUrl) {
-      results.push({ url: videoUrl, success: false, error: 'Empty URL' });
-      continue;
-    }
+  // Process in chunks or parallel with limit to avoid overwhelming CPU/Disk
+  const concurrencyLimit = 3;
+  const processVideo = async (videoUrl, index) => {
+    const url = videoUrl.trim();
+    if (!url) return { url, success: false, error: 'Empty URL' };
 
     try {
-      console.log(`📦 [${i + 1}/${urls.length}] Processing: ${videoUrl.substring(0, 60)}...`);
-      const { frames, audioPath } = await extractFrames(videoUrl);
+      console.log(`📦 [${index + 1}/${urls.length}] Starting: ${url.substring(0, 60)}...`);
+      const { frames, audioPath } = await extractFrames(url);
 
       if (!frames || frames.length === 0) {
-        results.push({ url: videoUrl, success: false, error: 'No frames extracted' });
-        continue;
+        return { url, success: false, error: 'No frames extracted' };
       }
 
       let transcript = "";
@@ -533,20 +529,12 @@ app.post('/api/batch-analyze', authenticateSession, async (req, res) => {
         try {
           transcript = await transcribeAudio(audioPath);
         } catch (err) {
-          console.warn(`⚠️ Transcription failed for ${videoUrl}:`, err.message);
+          console.warn(`⚠️ Transcription failed for ${url}:`, err.message);
         }
       }
 
-      const analysis = await analyzeVideoFrames(frames, `Analysis of: ${videoUrl}`, transcript);
+      const analysis = await analyzeVideoFrames(frames, `Analysis of: ${url}`, transcript);
       analysis.transcript = transcript;
-
-      results.push({
-        url: videoUrl,
-        success: true,
-        analysis,
-        framesAnalyzed: frames.length,
-        hasAudio: !!transcript
-      });
 
       // Increment stats
       try {
@@ -555,10 +543,25 @@ app.post('/api/batch-analyze', authenticateSession, async (req, res) => {
         console.warn('Failed to increment stat:', err.message);
       }
 
+      console.log(`✅ [${index + 1}/${urls.length}] Finished: ${url.substring(0, 60)}...`);
+      return {
+        url,
+        success: true,
+        analysis,
+        framesAnalyzed: frames.length,
+        hasAudio: !!transcript
+      };
     } catch (error) {
-      console.error(`Failed to analyze ${videoUrl}:`, error.message);
-      results.push({ url: videoUrl, success: false, error: error.message });
+      console.error(`❌ [${index + 1}/${urls.length}] Failed: ${url}:`, error.message);
+      return { url, success: false, error: error.message };
     }
+  };
+
+  // Run in chunks
+  for (let i = 0; i < urls.length; i += concurrencyLimit) {
+    const chunk = urls.slice(i, i + concurrencyLimit);
+    const chunkResults = await Promise.all(chunk.map((url, j) => processVideo(url, i + j)));
+    results.push(...chunkResults);
   }
 
   const successCount = results.filter(r => r.success).length;
@@ -581,7 +584,7 @@ app.post('/api/export-report', authenticateSession, async (req, res) => {
 
   try {
     const [user] = await sql`SELECT subscription_tier FROM users WHERE id = ${req.user.id}`;
-    if (!user || user.subscription_tier !== 'agency') {
+    if (!user || user.subscription_tier.toLowerCase() !== 'agency') {
       return res.status(403).json({ error: 'Report export is an Agency plan feature. Please upgrade.' });
     }
   } catch (err) {
@@ -1388,7 +1391,7 @@ app.post('/api/competitor-spy', authenticateSession, async (req, res) => {
   // Check tier - must be founding or agency
   try {
     const [user] = await sql`SELECT subscription_tier FROM users WHERE id = ${req.user.id}`;
-    if (!user || user.subscription_tier !== 'agency') {
+    if (!user || user.subscription_tier.toLowerCase() !== 'agency') {
       return res.status(403).json({ error: 'Competitor Spy is an Agency plan feature. Please upgrade to Agency.' });
     }
   } catch (err) {
@@ -1476,7 +1479,7 @@ app.post('/api/team/invite', authenticateSession, async (req, res) => {
 
   try {
     const [user] = await sql`SELECT subscription_tier FROM users WHERE id = ${req.user.id}`;
-    if (!user || user.subscription_tier !== 'agency') {
+    if (!user || user.subscription_tier.toLowerCase() !== 'agency') {
       return res.status(403).json({ error: 'Team Members is an Agency plan feature. Please upgrade.' });
     }
 
