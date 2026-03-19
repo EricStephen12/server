@@ -501,7 +501,7 @@ app.post('/api/batch-analyze', authenticateSession, async (req, res) => {
   // Check if user has agency plan
   try {
     const [user] = await sql`SELECT subscription_tier FROM users WHERE id = ${req.user.id}`;
-    if (!user || user.subscription_tier.toLowerCase() !== 'agency') {
+    if (!user || (user.subscription_tier || 'free').toLowerCase() !== 'agency') {
       return res.status(403).json({ error: 'Batch processing is an Agency plan feature. Please upgrade.' });
     }
   } catch (err) {
@@ -510,6 +510,7 @@ app.post('/api/batch-analyze', authenticateSession, async (req, res) => {
 
   console.log(`📦 Batch processing ${urls.length} URLs for user ${req.user.id}`);
 
+  const results = [];
   // Process in chunks or parallel with limit to avoid overwhelming CPU/Disk
   const concurrencyLimit = 3;
   const processVideo = async (videoUrl, index) => {
