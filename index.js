@@ -585,7 +585,7 @@ app.post('/api/export-report', authenticateSession, async (req, res) => {
 
   try {
     const [user] = await sql`SELECT subscription_tier FROM users WHERE id = ${req.user.id}`;
-    if (!user || user.subscription_tier.toLowerCase() !== 'agency') {
+    if (!user || (user.subscription_tier || 'free').toLowerCase() !== 'agency') {
       return res.status(403).json({ error: 'Report export is an Agency plan feature. Please upgrade.' });
     }
   } catch (err) {
@@ -1392,7 +1392,7 @@ app.post('/api/competitor-spy', authenticateSession, async (req, res) => {
   // Check tier - must be founding or agency
   try {
     const [user] = await sql`SELECT subscription_tier FROM users WHERE id = ${req.user.id}`;
-    if (!user || user.subscription_tier.toLowerCase() !== 'agency') {
+    if (!user || (user.subscription_tier || 'free').toLowerCase() !== 'agency') {
       return res.status(403).json({ error: 'Competitor Spy is an Agency plan feature. Please upgrade to Agency.' });
     }
   } catch (err) {
@@ -1480,7 +1480,7 @@ app.post('/api/team/invite', authenticateSession, async (req, res) => {
 
   try {
     const [user] = await sql`SELECT subscription_tier FROM users WHERE id = ${req.user.id}`;
-    if (!user || user.subscription_tier.toLowerCase() !== 'agency') {
+    if (!user || (user.subscription_tier || 'free').toLowerCase() !== 'agency') {
       return res.status(403).json({ error: 'Team Members is an Agency plan feature. Please upgrade.' });
     }
 
