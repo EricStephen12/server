@@ -87,6 +87,7 @@ async function resolveTikTokUrl(url) {
     const response = await axios({
         method: 'post',
         url: 'https://tikwm.com/api/',
+        timeout: 15000,
         headers: {
             'Content-Type': 'application/x-www-form-urlencoded',
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'

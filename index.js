@@ -12,7 +12,6 @@ const { analyzeVideoFrames } = require('./utils/visionAnalyzer');
 const { transcribeAudio } = require('./utils/audioTranscriber');
 const { sql, testConnection } = require('./db/index');
 const authenticateSession = require('./middleware/auth');
-require('./tier_fix');
 
 dotenv.config();
 
@@ -499,13 +498,10 @@ app.post('/api/batch-analyze', authenticateSession, async (req, res) => {
   }
 
   // Check if user has agency plan
-  try {
-    const [user] = await sql`SELECT subscription_tier FROM users WHERE id = ${req.user.id}`;
-    if (!user || (user.subscription_tier || 'free').toLowerCase() !== 'agency') {
-      return res.status(403).json({ error: 'Batch processing is an Agency plan feature. Please upgrade.' });
-    }
-  } catch (err) {
-    return res.status(500).json({ error: 'Could not verify subscription' });
+  // TEMPORARY: Allow all users access during public launch (Paddle processing)
+  const isAgency = true;
+  if (!isAgency) {
+    return res.status(403).json({ error: 'Batch processing is an Agency plan feature.' });
   }
 
   console.log(`📦 Batch processing ${urls.length} URLs for user ${req.user.id}`);
@@ -583,13 +579,10 @@ app.post('/api/batch-analyze', authenticateSession, async (req, res) => {
 app.post('/api/export-report', authenticateSession, async (req, res) => {
   const { analysis, videoUrl } = req.body;
 
-  try {
-    const [user] = await sql`SELECT subscription_tier FROM users WHERE id = ${req.user.id}`;
-    if (!user || (user.subscription_tier || 'free').toLowerCase() !== 'agency') {
-      return res.status(403).json({ error: 'Report export is an Agency plan feature. Please upgrade.' });
-    }
-  } catch (err) {
-    return res.status(500).json({ error: 'Could not verify subscription' });
+  // TEMPORARY: Allow all users access
+  const isAgency = true;
+  if (!isAgency) {
+    return res.status(403).json({ error: 'Report export is an Agency plan feature.' });
   }
 
   if (!analysis) {
@@ -1390,13 +1383,10 @@ app.post('/api/competitor-spy', authenticateSession, async (req, res) => {
   }
 
   // Check tier - must be founding or agency
-  try {
-    const [user] = await sql`SELECT subscription_tier FROM users WHERE id = ${req.user.id}`;
-    if (!user || (user.subscription_tier || 'free').toLowerCase() !== 'agency') {
-      return res.status(403).json({ error: 'Competitor Spy is an Agency plan feature. Please upgrade to Agency.' });
-    }
-  } catch (err) {
-    return res.status(500).json({ error: 'Could not verify subscription' });
+  // TEMPORARY: Allow all users access
+  const isAgency = true;
+  if (!isAgency) {
+    return res.status(403).json({ error: 'Competitor Spy is an Agency plan feature.' });
   }
 
   if (!process.env.APIFY_API_TOKEN) {
@@ -1478,11 +1468,13 @@ app.post('/api/team/invite', authenticateSession, async (req, res) => {
 
   if (!email) return res.status(400).json({ error: 'Email is required' });
 
+  // TEMPORARY: Allow all users access
+  const isAgency = true;
+  if (!isAgency) {
+    return res.status(403).json({ error: 'Team Members is an Agency plan feature.' });
+  }
+
   try {
-    const [user] = await sql`SELECT subscription_tier FROM users WHERE id = ${req.user.id}`;
-    if (!user || (user.subscription_tier || 'free').toLowerCase() !== 'agency') {
-      return res.status(403).json({ error: 'Team Members is an Agency plan feature. Please upgrade.' });
-    }
 
     // Check member limit (max 5)
     const [{ count }] = await sql`SELECT count(*)::int FROM team_members WHERE owner_id = ${req.user.id}`;
