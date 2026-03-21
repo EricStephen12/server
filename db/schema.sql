@@ -1,6 +1,6 @@
 -- Create Profiles Table (Linked to Auth Users)
 create table if not exists public.profiles (
-  id uuid references auth.users on delete cascade primary key,
+  id text primary key, -- Clerk User ID (e.g., user_...)
   full_name text,
   avatar_url text,
   plan_type text default 'free', -- 'free', 'pro', 'agency'
@@ -58,7 +58,7 @@ create or replace trigger on_auth_user_created
   for each row execute procedure public.handle_new_user();
 
 -- Atomic Increment Function for Stats
-create or replace function public.increment_profile_stat(user_id uuid, stat_column text)
+create or replace function public.increment_profile_stat(user_id text, stat_column text)
 returns void
 language plpgsql
 security definer

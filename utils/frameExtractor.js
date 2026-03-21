@@ -147,20 +147,34 @@ async function extractFrames(videoUrl, manualTimestamps = null) {
         console.log(`🎥 Initiating Elite Extraction for: ${videoUrl}`);
 
         const isTikTok = videoUrl.includes('tiktok.com');
+        const isInstagram = videoUrl.includes('instagram.com');
 
         if (isTikTok) {
             // PRIMARY: Use tikwm API (works on all servers including Render)
             try {
                 const directUrl = await resolveTikTokUrl(videoUrl);
-                console.log('⚡ Downloading TikTok video...');
+                console.log('⚡ Downloading TikTok video via tikwm...');
                 await downloadDirect(directUrl, videoPath);
             } catch (apiErr) {
                 console.warn('⚠️ tikwm API failed, trying yt-dlp fallback...', apiErr.message);
                 await downloadWithYtDlp(videoUrl, videoPath);
             }
+        } else if (isInstagram) {
+            console.log('⚡ Downloading Instagram Reel via yt-dlp...');
+            try {
+                await downloadWithYtDlp(videoUrl, videoPath);
+            } catch (igErr) {
+                console.warn('⚠️ yt-dlp failed for Instagram, trying direct download...', igErr.message);
+                await downloadDirect(videoUrl, videoPath);
+            }
         } else {
             console.log('⚡ Downloading video from direct URL...');
-            await downloadDirect(videoUrl, videoPath);
+            try {
+                await downloadDirect(videoUrl, videoPath);
+            } catch (err) {
+                console.warn('⚠️ Direct download failed, trying yt-dlp fallback...');
+                await downloadWithYtDlp(videoUrl, videoPath);
+            }
         }
 
         if (!fs.existsSync(videoPath)) {

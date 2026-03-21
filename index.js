@@ -11,7 +11,9 @@ const { extractFrames } = require('./utils/frameExtractor');
 const { analyzeVideoFrames } = require('./utils/visionAnalyzer');
 const { transcribeAudio } = require('./utils/audioTranscriber');
 const { sql, testConnection } = require('./db/index');
-const authenticateSession = require('./middleware/auth');
+const authenticateClerk = require('./middleware/clerkAuth');
+const adminRouter = require('./routes/admin');
+const webhookRouter = require('./routes/webhooks');
 
 dotenv.config();
 
@@ -55,7 +57,6 @@ try {
   console.warn('Groq initialization failed:', err.message);
 }
 
-// Routes
 // Health Check
 app.get('/health', async (req, res) => {
   res.json({
@@ -66,6 +67,12 @@ app.get('/health', async (req, res) => {
     gemini_configured: false // Gemini is no longer used
   });
 });
+
+// Webhook Routes (Must be before express.json() if using raw body, but handled internally in route)
+app.use('/api/webhooks', webhookRouter);
+
+// Admin Routes
+app.use('/api/admin', adminRouter);
 
 // DIAGNOSTIC ENDPOINT — hit this URL in browser to see what's broken
 app.get('/api/debug', async (req, res) => {
@@ -182,7 +189,7 @@ app.post('/api/auth/register', async (req, res) => {
 });
 
 // GET CURRENT USER PROFILE
-app.get('/api/me', authenticateSession, async (req, res) => {
+app.get('/api/me', authenticateClerk, async (req, res) => {
   try {
     const [user] = await sql`
       SELECT id, name, email, image, subscription_tier as plan_type, subscription_tier, credits_remaining, total_scripts, total_pins, total_videos_analyzed, created_at
@@ -220,7 +227,7 @@ app.get('/api/me', authenticateSession, async (req, res) => {
 });
 
 // UPDATE CURRENT USER PROFILE
-app.patch('/api/me', authenticateSession, async (req, res) => {
+app.patch('/api/me', authenticateClerk, async (req, res) => {
   const { name } = req.body;
   try {
     const [updatedUser] = await sql`
@@ -486,7 +493,7 @@ app.post('/api/analyze-video-url', async (req, res) => {
 // ============================================
 // BATCH URL PROCESSING (Agency Only)
 // ============================================
-app.post('/api/batch-analyze', authenticateSession, async (req, res) => {
+app.post('/api/batch-analyze', authenticateClerk, async (req, res) => {
   const { urls } = req.body;
 
   if (!urls || !Array.isArray(urls) || urls.length === 0) {
@@ -497,11 +504,13 @@ app.post('/api/batch-analyze', authenticateSession, async (req, res) => {
     return res.status(400).json({ error: 'Maximum 10 URLs per batch' });
   }
 
-  // Check if user has agency plan
-  // TEMPORARY: Allow all users access during public launch (Paddle processing)
-  const isAgency = true;
-  if (!isAgency) {
-    return res.status(403).json({ error: 'Batch processing is an Agency plan feature.' });
+  // Plan Gating: Agency Only
+  const tier = req.user.subscription_tier || 'free';
+  if (tier !== 'agency') {
+    return res.status(403).json({
+      error: 'Agency Access Required',
+      details: 'Batch Analysis is exclusive to the Agency Plan. Upgrade to unlock bulk DNA extraction.'
+    });
   }
 
   console.log(`📦 Batch processing ${urls.length} URLs for user ${req.user.id}`);
@@ -576,13 +585,16 @@ app.post('/api/batch-analyze', authenticateSession, async (req, res) => {
 // ============================================
 // EXPORT DNA REPORT (Agency Only)
 // ============================================
-app.post('/api/export-report', authenticateSession, async (req, res) => {
+app.post('/api/export-report', authenticateClerk, async (req, res) => {
   const { analysis, videoUrl } = req.body;
 
-  // TEMPORARY: Allow all users access
-  const isAgency = true;
-  if (!isAgency) {
-    return res.status(403).json({ error: 'Report export is an Agency plan feature.' });
+  // Plan Gating: Agency Only
+  const tier = req.user.subscription_tier || 'free';
+  if (tier !== 'agency') {
+    return res.status(403).json({
+      error: 'Agency Access Required',
+      details: 'Report Exporting is an Agency plan feature. Upgrade to unlock full DNA dossiers.'
+    });
   }
 
   if (!analysis) {
@@ -637,7 +649,7 @@ app.post('/api/export-report', authenticateSession, async (req, res) => {
 // ============================================
 // PLAN CHECK ENDPOINT
 // ============================================
-app.get('/api/plan-check', authenticateSession, async (req, res) => {
+app.get('/api/plan-check', authenticateClerk, async (req, res) => {
   try {
     const [user] = await sql`SELECT subscription_tier, subscription_status FROM users WHERE id = ${req.user.id}`;
     if (!user) return res.status(404).json({ error: 'User not found' });
@@ -678,7 +690,7 @@ app.get('/api/plan-check', authenticateSession, async (req, res) => {
   }
 });
 
-app.post('/api/analyze-video', upload.single('video'), async (req, res) => {
+app.post('/api/analyze-video', authenticateClerk, upload.single('video'), async (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: 'No video file provided' });
   }
@@ -687,9 +699,11 @@ app.post('/api/analyze-video', upload.single('video'), async (req, res) => {
     return res.status(503).json({ error: 'Groq API not configured' });
   }
 
+  const userId = req.user.id;
+
   // Plan Gating: Check monthly scan limits for free users
-  if (req.body.userId) {
-    const limit = await checkLimits(req.body.userId, 'scan');
+  if (userId) {
+    const limit = await checkLimits(userId, 'scan');
     if (!limit.allowed) {
       return res.status(403).json({
         error: 'Monthly Scan Limit Reached',
@@ -722,9 +736,9 @@ app.post('/api/analyze-video', upload.single('video'), async (req, res) => {
     const analysis = await analyzeVideoFrames(frames, 'Uploaded Draft Analysis', transcript);
 
     // Increment total_videos_analyzed
-    if (req.body.userId) {
+    if (userId) {
       try {
-        await sql`UPDATE users SET total_videos_analyzed = total_videos_analyzed + 1 WHERE id = ${req.body.userId}`;
+        await sql`UPDATE users SET total_videos_analyzed = total_videos_analyzed + 1 WHERE id = ${userId}`;
       } catch (err) {
         console.warn('Failed to increment total_videos_analyzed:', err.message);
       }
@@ -746,8 +760,9 @@ app.post('/api/analyze-video', upload.single('video'), async (req, res) => {
   }
 });
 
-app.post('/api/generate-script', async (req, res) => {
+app.post('/api/generate-script', authenticateClerk, async (req, res) => {
   const { productName, description, adId, answers, privateDna } = req.body;
+  const userId = req.user.id;
 
   if (!productName || !description) {
     return res.status(400).json({ error: 'Product name and description are required' });
@@ -758,12 +773,12 @@ app.post('/api/generate-script', async (req, res) => {
   }
 
   // Plan Gating
-  if (req.body.userId) {
-    const limit = await checkLimits(req.body.userId, 'script');
+  if (userId) {
+    const limit = await checkLimits(userId, 'script');
     if (!limit.allowed) {
       return res.status(403).json({
-        error: 'Monthly Script Limit Reached',
-        details: `Free users are limited to 3 scripts per month. You have used ${limit.count}/${limit.limit}. Please upgrade to lock in the Founding Rate!`,
+        error: 'Monthly Director Brief Limit Reached',
+        details: `Free users are limited to 3 Director Briefs per month. You have used ${limit.count}/${limit.limit}. Please upgrade to lock in the Founding Rate!`,
         upgradeRequired: true
       });
     }
@@ -972,8 +987,8 @@ app.post('/api/generate-script', async (req, res) => {
     if (sql) {
       try {
         await sql`
-          INSERT INTO scripts (product_name, description, script_content, created_at)
-          VALUES (${productName}, ${description}, ${JSON.stringify(scriptContent)}, ${new Date()})
+          INSERT INTO scripts (user_id, product_name, description, script_content, created_at)
+          VALUES (${req.user.id}, ${productName}, ${description}, ${JSON.stringify(scriptContent)}, ${new Date()})
         `;
       } catch (dbErr) {
         console.error('Failed to save to DB:', dbErr);
@@ -981,12 +996,12 @@ app.post('/api/generate-script', async (req, res) => {
     }
 
     // Increment total_scripts in profiles
-    if (sql && req.body.userId) {
+    if (sql && req.user.id) {
       try {
         await sql`
           UPDATE users 
           SET total_scripts = total_scripts + 1
-          WHERE id = ${req.body.userId}
+          WHERE id = ${req.user.id}
         `;
       } catch (statErr) {
         console.error('Failed to increment scripts stat:', statErr);
@@ -1224,12 +1239,9 @@ app.post('/api/creative-director-chat', async (req, res) => {
 });
 
 // Session Management Endpoints
-app.post('/api/save-lounge-session', async (req, res) => {
-  const { sessionId, userId, videoUrl, dna, messages, title } = req.body;
-  if (!userId) {
-    console.warn('⚠️ Attempted to save session without userId');
-    return res.status(400).json({ error: 'User ID is required' });
-  }
+app.post('/api/save-lounge-session', authenticateClerk, async (req, res) => {
+  const { sessionId, videoUrl, dna, messages, title } = req.body;
+  const userId = req.user.id; // Corrected to use authenticated user ID
 
   const msgCount = Array.isArray(messages) ? messages.length : 0;
   console.log(`💾 Persisting: User ${userId} | Session ${sessionId || 'NEW'} | Messages: ${msgCount}`);
@@ -1270,9 +1282,8 @@ app.post('/api/save-lounge-session', async (req, res) => {
   }
 });
 
-app.get('/api/user-sessions', async (req, res) => {
-  const { userId } = req.query;
-  if (!userId) return res.status(400).json({ error: 'User ID is required' });
+app.get('/api/user-sessions', authenticateClerk, async (req, res) => {
+  const userId = req.user.id; // Corrected to use authenticated user
 
   console.log(`🔍 User Requesting History: ${userId}`);
 
@@ -1375,18 +1386,20 @@ RETURNING *
 // ============================================
 // COMPETITOR SPY (Founding+ Only)
 // ============================================
-app.post('/api/competitor-spy', authenticateSession, async (req, res) => {
+app.post('/api/competitor-spy', authenticateClerk, async (req, res) => {
   const { profileUrl } = req.body;
 
   if (!profileUrl) {
     return res.status(400).json({ error: 'TikTok profile URL or username is required' });
   }
 
-  // Check tier - must be founding or agency
-  // TEMPORARY: Allow all users access
-  const isAgency = true;
-  if (!isAgency) {
-    return res.status(403).json({ error: 'Competitor Spy is an Agency plan feature.' });
+  // Plan Gating: Founding or Agency
+  const tier = req.user.subscription_tier || 'free';
+  if (tier === 'free') {
+    return res.status(403).json({
+      error: 'Spy Access Restricted',
+      details: 'Competitor Spying requires a Founding or Agency plan. Upgrade today to monitor rivals.'
+    });
   }
 
   if (!process.env.APIFY_API_TOKEN) {
@@ -1394,54 +1407,98 @@ app.post('/api/competitor-spy', authenticateSession, async (req, res) => {
   }
 
   try {
-    // Extract username from URL or use raw input
     let username = profileUrl.trim();
-    if (username.includes('tiktok.com/')) {
+    let platform = 'tiktok';
+
+    if (username.includes('instagram.com')) {
+      platform = 'instagram';
+      // Extract from: https://www.instagram.com/username/
+      const match = username.match(/instagram\.com\/([a-zA-Z0-9_.]+)/);
+      if (match) username = match[1];
+    } else if (username.includes('tiktok.com/')) {
       const match = username.match(/@([a-zA-Z0-9_.]+)/);
       if (match) username = match[1];
       else {
-        // Try extracting from path: tiktok.com/@username
         const parts = username.split('/').filter(Boolean);
         const last = parts[parts.length - 1];
         username = last.startsWith('@') ? last.slice(1) : last;
       }
     }
-    username = username.replace('@', '');
+    username = username.replace('@', '').split(/[?#/]/)[0];
 
-    console.log(`🕵️ Competitor Spy: Scanning @${username}...`);
+    console.log(`🕵️ Competitor Spy: Scanning @${username} on ${platform}...`);
 
     const apifyClient = new ApifyClient({ token: process.env.APIFY_API_TOKEN });
+    let videos = [];
 
-    const run = await apifyClient.actor('clockworks/tiktok-scraper').call({
-      profiles: [`https://www.tiktok.com/@${username}`],
-      resultsPerPage: 20,
-      shouldDownloadVideos: false,
-      shouldDownloadCovers: true,
-    }, { timeout: 120 });
+    if (platform === 'tiktok') {
+      const run = await apifyClient.actor('clockworks/tiktok-scraper').call({
+        profiles: [`https://www.tiktok.com/@${username}`],
+        resultsPerPage: 20,
+        shouldDownloadVideos: false,
+        shouldDownloadCovers: true,
+      }, { timeout: 120 });
 
-    const { items } = await apifyClient.dataset(run.defaultDatasetId).listItems();
+      if (!run?.defaultDatasetId) {
+        throw new Error('TikTok Scraper failed to initialize dataset.');
+      }
 
-    if (!items || items.length === 0) {
-      return res.json({ success: true, username, videos: [], message: 'No videos found for this profile.' });
+      const { items } = await apifyClient.dataset(run.defaultDatasetId).listItems();
+
+      if (items && items.length > 0) {
+        videos = items
+          .filter(item => item.webVideoUrl || item.videoUrl)
+          .sort((a, b) => (b.playCount || 0) - (a.playCount || 0))
+          .map(item => ({
+            id: item.id,
+            url: item.webVideoUrl || item.videoUrl,
+            thumbnail: item.videoMeta?.coverUrl || item.covers?.default || '',
+            caption: (item.text || '').substring(0, 200),
+            views: item.playCount || 0,
+            likes: item.diggCount || 0,
+            comments: item.commentCount || 0,
+            shares: item.shareCount || 0,
+            date: item.createTimeISO || item.createTime,
+            music: item.musicMeta?.musicName || '',
+          }));
+      }
+    } else {
+      // Instagram Spying (Using Apify Instagram Scraper)
+      const run = await apifyClient.actor('apify/instagram-scraper').call({
+        usernames: [username],
+        resultsType: 'posts',
+        resultsLimit: 20,
+        addParentData: true,
+      }, { timeout: 120 });
+
+      if (!run?.defaultDatasetId) {
+        throw new Error('Instagram Scraper failed to initialize dataset.');
+      }
+
+      const { items } = await apifyClient.dataset(run.defaultDatasetId).listItems();
+
+      if (items && items.length > 0) {
+        videos = items
+          .filter(item => item.type === 'Video' || item.type === 'Sidecar')
+          .sort((a, b) => (b.videoPlayCount || b.likesCount || 0) - (a.videoPlayCount || a.likesCount || 0))
+          .map(item => ({
+            id: item.id,
+            url: item.url,
+            thumbnail: item.displayUrl,
+            caption: (item.caption || '').substring(0, 200),
+            views: item.videoPlayCount || 0,
+            likes: item.likesCount || 0,
+            comments: item.commentsCount || 0,
+            shares: 0,
+            date: item.timestamp,
+            music: '',
+          }));
+      }
     }
 
-    // Sort by engagement (views) descending
-    const sorted = items
-      .filter(item => item.webVideoUrl || item.videoUrl)
-      .sort((a, b) => (b.playCount || 0) - (a.playCount || 0));
-
-    const videos = sorted.map(item => ({
-      id: item.id,
-      url: item.webVideoUrl || item.videoUrl,
-      thumbnail: item.videoMeta?.coverUrl || item.covers?.default || '',
-      caption: (item.text || '').substring(0, 200),
-      views: item.playCount || 0,
-      likes: item.diggCount || 0,
-      comments: item.commentCount || 0,
-      shares: item.shareCount || 0,
-      date: item.createTimeISO || item.createTime,
-      music: item.musicMeta?.musicName || '',
-    }));
+    if (videos.length === 0) {
+      return res.json({ success: true, username, videos: [], message: `No videos found for this ${platform} profile.` });
+    }
 
     console.log(`🕵️ Competitor Spy: Found ${videos.length} videos for @${username}`);
 
@@ -1463,15 +1520,18 @@ app.post('/api/competitor-spy', authenticateSession, async (req, res) => {
 // ============================================
 
 // Invite a team member
-app.post('/api/team/invite', authenticateSession, async (req, res) => {
+app.post('/api/team/invite', authenticateClerk, async (req, res) => {
   const { email } = req.body;
 
   if (!email) return res.status(400).json({ error: 'Email is required' });
 
-  // TEMPORARY: Allow all users access
-  const isAgency = true;
-  if (!isAgency) {
-    return res.status(403).json({ error: 'Team Members is an Agency plan feature.' });
+  // Plan Gating: Agency Only
+  const tier = req.user.subscription_tier || 'free';
+  if (tier !== 'agency') {
+    return res.status(403).json({
+      error: 'Agency Access Required',
+      details: 'Team Members is an Agency plan feature. Upgrade to collaborate with your team.'
+    });
   }
 
   try {
@@ -1512,7 +1572,7 @@ app.post('/api/team/invite', authenticateSession, async (req, res) => {
 });
 
 // List team members
-app.get('/api/team/members', authenticateSession, async (req, res) => {
+app.get('/api/team/members', authenticateClerk, async (req, res) => {
   try {
     const members = await sql`
       SELECT tm.*, u.name as member_name, u.image as member_image
@@ -1529,7 +1589,7 @@ app.get('/api/team/members', authenticateSession, async (req, res) => {
 });
 
 // Remove team member
-app.delete('/api/team/remove/:memberId', authenticateSession, async (req, res) => {
+app.delete('/api/team/remove/:memberId', authenticateClerk, async (req, res) => {
   try {
     const { memberId } = req.params;
 
