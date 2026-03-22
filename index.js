@@ -13,7 +13,9 @@ const { transcribeAudio } = require('./utils/audioTranscriber');
 const { sql, testConnection } = require('./db/index');
 const authenticateClerk = require('./middleware/clerkAuth');
 const adminRouter = require('./routes/admin');
-const webhookRouter = require('./routes/webhooks');
+const clerkWebhooks = require('./routes/webhooks');
+const polarWebhooks = require('./routes/polar');
+const checkoutRouter = require('./routes/checkout');
 
 dotenv.config();
 
@@ -34,14 +36,17 @@ app.use(cors({
   ].filter(Boolean),
   credentials: true
 }));
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
+// Webhook & Payment Routes - MUST be before express.json() for raw body signatures
+app.use('/api/webhooks/clerk', clerkWebhooks);
+app.use('/api/webhooks/polar', polarWebhooks);
+
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
 // Neon Database Connection (Postgres)
-// Note: sql is exported from ./db/index and handles its own pooling.
-// We test the connection on startup for diagnostics.
-testConnection();
+// Connection is tested in app.listen below for cleaner startup sequence.
 
 // Groq Connection
 let groq;
@@ -68,8 +73,7 @@ app.get('/health', async (req, res) => {
   });
 });
 
-// Webhook Routes (Must be before express.json() if using raw body, but handled internally in route)
-app.use('/api/webhooks', webhookRouter);
+app.use('/api/checkout', checkoutRouter);
 
 // Admin Routes
 app.use('/api/admin', adminRouter);

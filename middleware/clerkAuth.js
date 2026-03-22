@@ -30,8 +30,8 @@ async function authenticateClerk(req, res, next) {
         const userId = session.sub;
 
         // 2. Fetch or Sync user from local database
-        // We want to ensure the user exists in our DB so existing relations work
-        let [user] = await sql`SELECT * FROM users WHERE clerk_id = ${userId} OR email = ${session.email}`;
+        // We query by clerk_id as the primary identifier.
+        let [user] = await sql`SELECT * FROM users WHERE clerk_id = ${userId}`;
 
         if (!user) {
             // Initial sync if user doesn't exist yet (Fallback for Webhooks)
