@@ -45,9 +45,9 @@ async function authenticateClerk(req, res, next) {
                 INSERT INTO users (clerk_id, email, name, subscription_tier, is_admin, created_at)
                 VALUES (${userId}, ${email}, ${name}, ${plan_type}, ${is_admin}, NOW())
                 ON CONFLICT (email) DO UPDATE 
-                SET clerk_id = ${userId}, 
+                SET clerk_id = EXCLUDED.clerk_id, 
                     subscription_tier = EXCLUDED.subscription_tier,
-                    is_admin = EXCLUDED.is_admin
+                    is_admin = COALESCE(users.is_admin, EXCLUDED.is_admin) -- Only promote, never demote
                 RETURNING *
             `;
         }
