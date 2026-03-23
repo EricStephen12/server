@@ -7,12 +7,12 @@ const clerkClient = createClerkClient({ secretKey: process.env.CLERK_SECRET_KEY 
  * Middleware to verify Clerk session on the Express backend.
  */
 async function authenticateClerk(req, res, next) {
-    // 1. Get token from cookies or Authorization header
-    let sessionToken = req.cookies['__session'];
+    // 1. Get token from Authorization header (highest priority for SPA refreshes)
+    let sessionToken = req.headers.authorization ? req.headers.authorization.split(' ')[1] : null;
 
-    // Fallback to Bearer token for API efficiency
-    if (!sessionToken && req.headers.authorization) {
-        sessionToken = req.headers.authorization.split(' ')[1];
+    // Fallback to cookies if no header is present
+    if (!sessionToken) {
+        sessionToken = req.cookies['__session'];
     }
 
     if (!sessionToken) {
