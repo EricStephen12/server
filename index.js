@@ -26,36 +26,22 @@ const port = process.env.PORT || 4000;
 const upload = multer({ dest: 'uploads/' });
 
 // Middleware
-// Standardize FRONTEND_URL for CORS
-const frontendUrl = (process.env.FRONTEND_URL || 'http://localhost:3000').replace(/\/$/, '');
+// Unify Backend CORS for 'Elite' Production Sync
+const allowedOrigins = [
+  'http://localhost:3000',
+  'http://localhost:3001',
+  (process.env.FRONTEND_URL || '').replace(/\/$/, ''),
+  (process.env.CLIENT_URL || '').replace(/\/$/, ''),
+  'https://eixora.vercel.app',
+  'https://client-phi-ivory.vercel.app'
+].filter(Boolean);
 
 app.use(cors({
   origin: function (origin, callback) {
-    // 1. Allow local development
-    if (!origin || origin.includes('localhost') || origin.includes('127.0.0.1')) {
+    if (!origin || allowedOrigins.some(o => origin.startsWith(o)) || origin.endsWith('.vercel.app')) {
       return callback(null, true);
     }
-
-    // 2. Allow configured Production URL
-    if (origin === frontendUrl) {
-      return callback(null, true);
-    }
-
-    // 3. Allow all Vercel domains (for preview branches)
-    if (origin.endsWith('.vercel.app')) {
-      return callback(null, true);
-    }
-
-    // 4. Fallback/Allow list for known aliases
-    const allowList = [
-      'https://eixora.vercel.app',
-      'https://client-phi-ivory.vercel.app'
-    ];
-    if (allowList.includes(origin)) {
-      return callback(null, true);
-    }
-
-    console.warn(`🚨 [CORS] Blocked access from: ${origin}`);
+    console.warn(`🚨 CORS Blocked: ${origin}`);
     callback(new Error('Not allowed by CORS'));
   },
   credentials: true,
