@@ -1,12 +1,10 @@
 const express = require('express');
 const router = express.Router();
 const { sql } = require('../db/index');
-const authenticateClerk = require('../middleware/clerkAuth');
-const adminOnly = require('../middleware/admin');
+const adminProtected = require('../middleware/adminProtected');
 
-// Apply admin protection to all routes in this router
-router.use(authenticateClerk);
-router.use(adminOnly);
+// Apply unified admin protection 🛡️💎
+router.use(adminProtected);
 
 /**
  * GET /api/admin/stats

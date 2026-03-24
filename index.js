@@ -13,9 +13,12 @@ const { transcribeAudio } = require('./utils/audioTranscriber');
 const { sql, testConnection } = require('./db/index');
 const authenticateClerk = require('./middleware/clerkAuth');
 const adminRouter = require('./routes/admin');
+const adminAuthRouter = require('./routes/adminAuth');
 const clerkWebhooks = require('./routes/webhooks');
 const polarWebhooks = require('./routes/polar');
 const checkoutRouter = require('./routes/checkout');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 
 dotenv.config();
 
@@ -48,7 +51,17 @@ app.use(cors({
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'Cookie']
 }));
+// Security Layer 💎🛡️
+app.use(helmet());
 app.use(cookieParser());
+
+// Global Rate Limiter (Anti-DDoS/Hacking) 🚀
+const globalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 100, // Limit each IP to 100 requests per 15 mins
+  message: { error: 'Elite Security Protocol: Too many requests. Please wait.' }
+});
+app.use('/api/', globalLimiter);
 
 // Webhook & Payment Routes - MUST be before express.json() for raw body signatures
 app.use('/api/webhooks/clerk', clerkWebhooks);
@@ -88,6 +101,7 @@ app.get('/health', async (req, res) => {
 app.use('/api/checkout', checkoutRouter);
 
 // Admin Routes
+app.use('/api/admin/auth', adminAuthRouter);
 app.use('/api/admin', adminRouter);
 
 // DIAGNOSTIC ENDPOINT — hit this URL in browser to see what's broken
