@@ -13,19 +13,20 @@ router.use(adminProtected);
 router.get('/stats', async (req, res) => {
     try {
         const [userCount] = await sql`SELECT count(*) FROM users`;
-        const [scanCount] = await sql`SELECT sum(total_videos_analyzed) as total FROM profiles`;
+        // Use COALESCE to handle NULL sums and target the 'users' table 🚀
+        const [scanCount] = await sql`SELECT sum(total_videos_analyzed) as total FROM users`;
         const planBreakdown = await sql`
-            SELECT plan_type, count(*) as count 
-            FROM profiles 
-            GROUP BY plan_type
+            SELECT subscription_tier as plan_type, count(*) as count 
+            FROM users 
+            GROUP BY subscription_tier
         `;
 
         res.json({
-            totalUsers: parseInt(userCount.count),
+            totalUsers: parseInt(userCount.count || 0),
             totalScans: parseInt(scanCount.total || 0),
             planBreakdown: planBreakdown.map(p => ({
-                name: p.plan_type,
-                value: parseInt(p.count)
+                name: p.plan_type || 'free',
+                value: parseInt(p.count || 0)
             }))
         });
     } catch (err) {
@@ -40,18 +41,17 @@ router.get('/stats', async (req, res) => {
  */
 router.get('/users', async (req, res) => {
     try {
+        // Simplified query to use only the 'users' table 💎
         const users = await sql`
             SELECT 
-                u.id, 
-                u.email, 
-                u.name, 
-                p.plan_type, 
-                p.subscription_status,
-                p.total_videos_analyzed as scans,
-                u.created_at
-            FROM users u
-            JOIN profiles p ON u.id = p.id
-            ORDER BY u.created_at DESC
+                id, 
+                email, 
+                name, 
+                subscription_tier as plan_type, 
+                total_videos_analyzed as scans,
+                created_at
+            FROM users
+            ORDER BY created_at DESC
             LIMIT 100
         `;
 
@@ -59,6 +59,66 @@ router.get('/users', async (req, res) => {
     } catch (err) {
         console.error('Admin Users Error:', err);
         res.status(500).json({ error: 'Failed to fetch users' });
+    }
+});
+
+/**
+ * GET /api/admin/support
+ * List all support tickets
+ */
+router.get('/support', async (req, res) => {
+    try {
+        const tickets = await sql`
+            SELECT t.*, u.name as user_name 
+            FROM support_tickets t
+            LEFT JOIN users u ON t.user_id = u.id
+            ORDER BY t.created_at DESC
+        `;
+        res.json(tickets);
+    } catch (err) {
+        console.error('Admin Support Error:', err);
+        res.status(500).json({ error: 'Failed to fetch tickets' });
+    }
+});
+
+/**
+ * PATCH /api/admin/support/:id/resolve
+ */
+router.patch('/support/:id/resolve', async (req, res) => {
+    try {
+        const { id } = req.params;
+        await sql`UPDATE support_tickets SET status = 'resolved' WHERE id = ${id}`;
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to resolve ticket' });
+    }
+});
+
+/**
+ * POST /api/admin/users/:id/update-tier
+ */
+router.post('/users/:id/update-tier', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { tier } = req.body;
+        await sql`UPDATE users SET subscription_tier = ${tier} WHERE id = ${id}`;
+        res.json({ success: true, tier });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to update user tier' });
+    }
+});
+
+/**
+ * POST /api/admin/users/:id/add-credits
+ */
+router.post('/users/:id/add-credits', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { amount } = req.body;
+        await sql`UPDATE users SET credits_remaining = credits_remaining + ${amount} WHERE id = ${id}`;
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to add credits' });
     }
 });
 

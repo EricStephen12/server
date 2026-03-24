@@ -14,6 +14,7 @@ const { sql, testConnection } = require('./db/index');
 const authenticateClerk = require('./middleware/clerkAuth');
 const adminRouter = require('./routes/admin');
 const adminAuthRouter = require('./routes/adminAuth');
+const supportRouter = require('./routes/support');
 const clerkWebhooks = require('./routes/webhooks');
 const polarWebhooks = require('./routes/polar');
 const checkoutRouter = require('./routes/checkout');
@@ -24,6 +25,9 @@ dotenv.config();
 
 const app = express();
 const port = process.env.PORT || 4000;
+
+// Elite Security: Trust Proxy for Rate Limiting 🛡️
+app.set('trust proxy', 1);
 
 // Multer for file uploads
 const upload = multer({ dest: 'uploads/' });
@@ -103,6 +107,7 @@ app.use('/api/checkout', checkoutRouter);
 // Admin Routes
 app.use('/api/admin/auth', adminAuthRouter);
 app.use('/api/admin', adminRouter);
+app.use('/api/support', supportRouter);
 
 // DIAGNOSTIC ENDPOINT — hit this URL in browser to see what's broken
 app.get('/api/debug', async (req, res) => {
@@ -221,6 +226,21 @@ app.post('/api/auth/register', async (req, res) => {
 // GET CURRENT USER PROFILE
 app.get('/api/me', authenticateClerk, async (req, res) => {
   try {
+    // 💎 MASTER ADMIN SHORT-CIRCUIT 🚀
+    if (req.user.id === '00000000-0000-0000-0000-000000000000') {
+      return res.json({
+        id: req.user.id,
+        name: 'Elite Master Admin',
+        email: 'admin@eixora.ai',
+        plan_type: 'agency',
+        subscription_tier: 'agency',
+        is_admin: true,
+        is_master_admin: true,
+        credits_remaining: 999999,
+        monthly_usage: { scans: 0, scripts: 0 }
+      });
+    }
+
     const [user] = await sql`
       SELECT id, name, email, image, subscription_tier as plan_type, subscription_tier, credits_remaining, total_scripts, total_pins, total_videos_analyzed, created_at
       FROM users
@@ -1315,6 +1335,11 @@ app.post('/api/save-lounge-session', authenticateClerk, async (req, res) => {
 app.get('/api/user-sessions', authenticateClerk, async (req, res) => {
   const userId = req.user.id; // Corrected to use authenticated user
 
+  // 💎 MASTER ADMIN SHORT-CIRCUIT 🚀
+  if (userId === '00000000-0000-0000-0000-000000000000') {
+    return res.json([]);
+  }
+
   console.log(`🔍 User Requesting History: ${userId}`);
 
   try {
@@ -1726,6 +1751,41 @@ app.listen(port, async () => {
   try {
     const isHealthy = await testConnection();
     if (isHealthy) {
+      // 💎 ELITE BOOTSTRAP: Ensure Master Admin & Schema integrity 🛡️
+      try {
+        await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN DEFAULT FALSE`;
+        await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS total_videos_analyzed INTEGER DEFAULT 0`;
+
+        // 📨 SUPPORT HUB: Create ticketing table
+        await sql`
+          CREATE TABLE IF NOT EXISTS support_tickets (
+            id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+            user_id uuid REFERENCES users(id) ON DELETE SET NULL,
+            email text,
+            subject text NOT NULL,
+            message text NOT NULL,
+            status text DEFAULT 'open',
+            created_at timestamp with time zone DEFAULT now()
+          )
+        `;
+
+        await sql`
+          INSERT INTO users (id, name, email, is_admin, subscription_tier, created_at)
+          VALUES (
+            '00000000-0000-0000-0000-000000000000', 
+            'Elite Master Admin', 
+            'admin@eixora.ai', 
+            TRUE, 
+            'agency', 
+            NOW()
+          )
+          ON CONFLICT (id) DO NOTHING
+        `;
+        console.log('💎 Elite Security: Master Admin & Support Hub provisioned.');
+      } catch (dbErr) {
+        console.warn('⚠️ Bootstrap Warning:', dbErr.message);
+      }
+
       const countRes = await sql`SELECT count(*) FROM ads`;
       console.log(`✅ Startup Neon Connection Successful! Ads in DB: ${countRes[0].count} `);
     }

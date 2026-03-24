@@ -10,11 +10,11 @@ const clerkClient = createClerkClient({ secretKey: process.env.CLERK_SECRET_KEY 
  * 2. Clerk Session with Admin Status (Database Profile check)
  */
 async function adminProtected(req, res, next) {
-    let sessionToken = req.cookies['admin_token'] || req.cookies['__session'];
+    // 1. Prioritize Authorization Header (used for Master Admin) 💎🚀
+    let sessionToken = req.headers.authorization ? req.headers.authorization.split(' ')[1] : null;
 
-    // 1. Fallback to Authorization Header 🚀
-    if (!sessionToken && req.headers.authorization) {
-        sessionToken = req.headers.authorization.split(' ')[1];
+    if (!sessionToken) {
+        sessionToken = req.cookies['admin_token'] || req.cookies['__session'];
     }
 
     if (!sessionToken) {
@@ -26,7 +26,7 @@ async function adminProtected(req, res, next) {
         try {
             const decoded = jwt.verify(sessionToken, process.env.JWT_SECRET);
             if (decoded && decoded.role === 'master_admin') {
-                req.user = { id: 'master_admin', email: 'admin@eixora.ai', is_admin: true, is_master_admin: true };
+                req.user = { id: '00000000-0000-0000-0000-000000000000', email: 'admin@eixora.ai', is_admin: true, is_master_admin: true };
                 return next();
             }
         } catch (jwtErr) {
@@ -39,14 +39,14 @@ async function adminProtected(req, res, next) {
             const userId = session.sub;
 
             // Verify Admin status in database
-            const [user] = await sql`SELECT is_admin, email, name FROM users WHERE clerk_id = ${userId}`;
+            const [user] = await sql`SELECT id, is_admin, email, name FROM users WHERE clerk_id = ${userId}`;
 
             if (!user || !user.is_admin) {
                 console.warn(`🚨 Admin access denied for unauthorized user: ${userId}`);
                 return res.status(403).json({ error: 'Forbidden: Admin access only.' });
             }
 
-            req.user = { ...user, id: userId, clerk_id: userId };
+            req.user = { ...user, clerk_id: userId };
             return next();
         } catch (clerkErr) {
             return res.status(401).json({ error: 'Invalid or expired session. Please log in again.' });
