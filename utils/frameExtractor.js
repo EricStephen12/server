@@ -10,7 +10,8 @@ const { execSync } = require('child_process');
 
 function findSystemFfmpeg() {
     try {
-        const path = execSync('which ffmpeg', { encoding: 'utf-8' }).trim();
+        const cmd = process.platform === 'win32' ? 'where ffmpeg' : 'which ffmpeg';
+        const path = execSync(cmd, { encoding: 'utf-8' }).split('\n')[0].trim();
         if (path) return path;
     } catch (_) { }
     return null;
@@ -87,7 +88,7 @@ async function resolveTikTokUrl(url) {
     const response = await axios({
         method: 'post',
         url: 'https://tikwm.com/api/',
-        timeout: 15000,
+        timeout: 30000,
         headers: {
             'Content-Type': 'application/x-www-form-urlencoded',
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
@@ -118,10 +119,19 @@ async function downloadWithYtDlp(url, destPath) {
     const { execSync } = require('child_process');
     let ytdlp = null;
     const localBin = path.join(__dirname, '../yt-dlp');
+    const localBinExe = path.join(__dirname, '../yt-dlp.exe');
+
     if (fs.existsSync(localBin)) ytdlp = localBin;
-    else { try { ytdlp = execSync('which yt-dlp', { encoding: 'utf-8' }).trim(); } catch (_) { } }
+    else if (fs.existsSync(localBinExe)) ytdlp = localBinExe;
+    else { 
+        try { 
+            const cmd = process.platform === 'win32' ? 'where yt-dlp' : 'which yt-dlp';
+            ytdlp = execSync(cmd, { encoding: 'utf-8' }).split('\n')[0].trim(); 
+        } catch (_) { } 
+    }
+
     if (!ytdlp) throw new Error('yt-dlp not available on this server.');
-    console.log('⚡ Fallback: Downloading with yt-dlp...');
+    console.log(`⚡ Fallback: Downloading with yt-dlp (${ytdlp})...`);
     return new Promise((resolve, reject) => {
         exec(`"${ytdlp}" -o "${destPath}" --no-playlist --merge-output-format mp4 "${url}"`,
             { timeout: 120000 }, (error, stdout, stderr) => {

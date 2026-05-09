@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { sql } = require('../db/index');
-const authenticateClerk = require('../middleware/clerkAuth');
+
 
 /**
  * POST /api/support/submit

@@ -1,0 +1,136 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                  String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  clerkId             String?          @unique @map("clerk_id")
+  name                String?
+  email               String?          @unique
+  emailVerified       DateTime?        @map("email_verified")
+  image               String?
+  password            String?
+  subscriptionTier    String?          @default("free") @map("subscription_tier")
+  creditsRemaining    Int?             @default(10) @map("credits_remaining")
+  totalScripts        Int?             @default(0) @map("total_scripts")
+  totalPins           Int?             @default(0) @map("total_pins")
+  onboardingCompleted Boolean          @default(false) @map("onboarding_completed")
+  brandNiche          String?          @map("brand_niche")
+  primaryGoal         String?          @map("primary_goal")
+  totalVideosAnalyzed Int?             @default(0) @map("total_videos_analyzed")
+  createdAt           DateTime?        @default(now()) @map("created_at")
+  
+  accounts            Account[]
+  sessions            Session[]
+  scripts             Script[]
+  loungeSessions      LoungeSession[]
+
+  teamMembers         TeamMember[]     @relation("OwnerToMembers")
+  
+  @@map("users")
+}
+
+model TeamMember {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  ownerId      String   @map("owner_id") @db.Uuid
+  memberEmail  String   @map("member_email")
+  role         String   @default("member")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  owner        User     @relation("OwnerToMembers", fields: [ownerId], references: [id], onDelete: Cascade)
+
+  @@unique([ownerId, memberEmail])
+  @@map("team_members")
+}
+
+model Account {
+  id                String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId            String  @map("user_id") @db.Uuid
+  type              String
+  provider          String
+  providerAccountId String  @map("provider_account_id")
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@map("accounts")
+}
+
+model Session {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  sessionToken String   @unique @map("session_token")
+  userId       String   @map("user_id") @db.Uuid
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+  @@map("verification_tokens")
+}
+
+model Ad {
+  id            BigInt    @id @default(autoincrement())
+  title         String
+  niche         String?
+  videoUrl      String    @map("video_url")
+  thumbnailUrl  String?   @map("thumbnail_url")
+  viewsCount    String?   @map("views_count")
+  likesCount    String?   @map("likes_count")
+  commentsCount String?   @map("comments_count")
+  platform      String?   @default("tiktok")
+  isVerified    Boolean?  @default(false) @map("is_verified")
+  visualDna     Json?     @map("visual_dna")
+  analysis      Json?
+  createdAt     DateTime? @default(now()) @map("created_at")
+
+  @@map("ads")
+}
+
+model Script {
+  id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId        String?   @map("user_id") @db.Uuid
+  title         String?
+  scriptContent Json?     @map("script_content")
+  createdAt     DateTime? @default(now()) @map("created_at")
+  
+  user          User?     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("scripts")
+}
+
+model LoungeSession {
+  id        String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId    String?   @map("user_id") @db.Uuid
+  title     String?
+  videoUrl  String?   @map("video_url")
+  dna       Json?
+  messages  Json?     @default("[]")
+  createdAt DateTime? @default(now()) @map("created_at")
+  updatedAt DateTime? @default(now()) @map("updated_at")
+  
+  user      User?     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("lounge_sessions")
+}

@@ -1,15 +1,26 @@
-const adminOnly = (req, res, next) => {
-    // authenticateClerk must be called before this to populate req.user
-    if (!req.user) {
-        return res.status(401).json({ error: 'Unauthorized' });
+const { sql } = require('../db/index');
+
+const adminOnly = async (req, res, next) => {
+    const userId = req.body.userId || req.query.userId;
+    
+    if (!userId) {
+        return res.status(401).json({ error: 'Unauthorized: User ID required' });
     }
 
-    if (!req.user.is_admin) {
-        console.warn(`Admin access denied for user: ${req.user.email}`);
-        return res.status(403).json({ error: 'Forbidden: Admin access required' });
-    }
+    try {
+        const [user] = await sql`SELECT is_admin, email FROM users WHERE id = ${userId}`;
+        
+        if (!user || !user.is_admin) {
+            console.warn(`Admin access denied for user: ${userId}`);
+            return res.status(403).json({ error: 'Forbidden: Admin access required' });
+        }
 
-    next();
+        req.user = user; // Populate req.user for downstream use
+        next();
+    } catch (err) {
+        console.error('Admin check error:', err);
+        res.status(500).json({ error: 'Internal server error during admin check' });
+    }
 };
 
 module.exports = adminOnly;

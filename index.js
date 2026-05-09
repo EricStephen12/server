@@ -3,22 +3,16 @@ const cors = require('cors');
 const cookieParser = require('cookie-parser');
 const dotenv = require('dotenv');
 const Groq = require('groq-sdk');
-const { GoogleGenerativeAI } = require("@google/generative-ai");
-const { GoogleAIFileManager } = require("@google/generative-ai/server");
 const multer = require('multer');
-const { ApifyClient } = require('apify-client');
 const { extractFrames } = require('./utils/frameExtractor');
 const { analyzeVideoFrames } = require('./utils/visionAnalyzer');
 const { transcribeAudio } = require('./utils/audioTranscriber');
 const { sql, testConnection } = require('./db/index');
-const authenticateClerk = require('./middleware/clerkAuth');
+const prisma = require('./db/prisma');
 const adminRouter = require('./routes/admin');
 const adminAuthRouter = require('./routes/adminAuth');
 const supportRouter = require('./routes/support');
-const clerkWebhooks = require('./routes/webhooks');
-const polarWebhooks = require('./routes/polar');
 const selarWebhooks = require('./routes/selar');
-const checkoutRouter = require('./routes/checkout');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 
@@ -69,8 +63,6 @@ const globalLimiter = rateLimit({
 app.use('/api/', globalLimiter);
 
 // Webhook & Payment Routes - MUST be before express.json() for raw body signatures
-app.use('/api/webhooks/clerk', clerkWebhooks);
-app.use('/api/webhooks/polar', polarWebhooks);
 app.use('/api/webhooks/selar', selarWebhooks);
 
 app.use(express.json());
@@ -99,12 +91,40 @@ app.get('/health', async (req, res) => {
     status: 'ok',
     timestamp: new Date(),
     message: 'Server is running.',
-    groq_configured: !!groq,
-    gemini_configured: false // Gemini is no longer used
+    groq_configured: !!groq
   });
 });
 
-app.use('/api/checkout', checkoutRouter);
+// 💎 Elite Helper: Resolve External ID to Internal UUID 🛡️
+// This allows the frontend to pass 'user_...' (Clerk ID) or a UUID.
+async function resolveInternalId(id, clerkInfo = null) {
+  if (!id) return null;
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (uuidRegex.test(id)) return id;
+
+  if (id === '00000000-0000-0000-0000-000000000000') return id;
+
+  try {
+    let [user] = await sql`SELECT id FROM users WHERE clerk_id = ${id}`;
+    if (user) return user.id;
+
+    // 🛡️ ELITE LAZY-SYNC
+    const email = clerkInfo?.email || null;
+    const name = clerkInfo?.name || null;
+
+    console.log(`💎 Elite Sync: Creating record for Clerk ID ${id}`);
+    const [newUser] = await sql`
+      INSERT INTO users (clerk_id, email, name, subscription_tier, created_at)
+      VALUES (${id}, ${email}, ${name}, 'free', ${new Date()})
+      ON CONFLICT (email) DO UPDATE SET clerk_id = ${id}
+      RETURNING id
+    `;
+    return newUser.id;
+  } catch (err) {
+    console.error('❌ Resolve User Error:', err.message);
+    return null;
+  }
+}
 
 // Admin Routes
 app.use('/api/admin/auth', adminAuthRouter);
@@ -121,9 +141,6 @@ app.get('/api/debug', async (req, res) => {
   // 1. Env vars
   report.env = {
     DATABASE_URL: !!process.env.DATABASE_URL,
-    NEXTAUTH_SECRET: !!process.env.NEXTAUTH_SECRET,
-    GROQ_API_KEY: !!process.env.GROQ_API_KEY,
-    APIFY_API_TOKEN: !!process.env.APIFY_API_TOKEN,
     PORT: process.env.PORT,
   };
 
@@ -226,12 +243,17 @@ app.post('/api/auth/register', async (req, res) => {
 });
 
 // GET CURRENT USER PROFILE
-app.get('/api/me', authenticateClerk, async (req, res) => {
+app.get('/api/me', async (req, res) => {
+  let userId = req.query.userId;
+  const { email, name } = req.query;
+  userId = await resolveInternalId(userId, { email, name });
+  if (!userId) return res.status(404).json({ error: 'User not found' });
+
   try {
     // 💎 MASTER ADMIN SHORT-CIRCUIT 🚀
-    if (req.user.id === '00000000-0000-0000-0000-000000000000') {
+    if (userId === '00000000-0000-0000-0000-000000000000') {
       return res.json({
-        id: req.user.id,
+        id: userId,
         name: 'Elite Master Admin',
         email: 'admin@eixora.ai',
         plan_type: 'agency',
@@ -244,29 +266,53 @@ app.get('/api/me', authenticateClerk, async (req, res) => {
     }
 
     const [user] = await sql`
-      SELECT id, name, email, image, subscription_tier as plan_type, subscription_tier, credits_remaining, total_scripts, total_pins, total_videos_analyzed, created_at
-      FROM users
-      WHERE id = ${req.user.id}
+      SELECT 
+        id, 
+        name, 
+        email, 
+        image, 
+        subscription_tier as "subscriptionTier", 
+        credits_remaining as "creditsRemaining", 
+        total_scripts as "totalScripts", 
+        total_pins as "totalPins", 
+        total_videos_analyzed as "totalVideosAnalyzed", 
+        onboarding_completed as "onboardingCompleted", 
+        brand_niche as "brandNiche", 
+        primary_goal as "primaryGoal", 
+        created_at as "createdAt"
+      FROM users 
+      WHERE id = ${userId}
     `;
 
     if (!user) return res.status(404).json({ error: 'User not found' });
 
-    // Fetch monthly usage
+    // Fetch monthly usage (Keep using sql for count for now or migrate to prisma)
     const oneMonthAgo = new Date();
     oneMonthAgo.setDate(oneMonthAgo.getDate() - 30);
 
     const [{ scanCount }] = await sql`
       SELECT count(*)::int as "scanCount" FROM lounge_sessions 
-      WHERE user_id = ${req.user.id} AND updated_at > ${oneMonthAgo}
+      WHERE user_id = ${userId} AND updated_at > ${oneMonthAgo}
     `;
 
     const [{ scriptCount }] = await sql`
       SELECT count(*)::int as "scriptCount" FROM scripts 
-      WHERE user_id = ${req.user.id} AND created_at > ${oneMonthAgo}
+      WHERE user_id = ${userId} AND created_at > ${oneMonthAgo}
     `;
 
+    // Map Prisma camelCase back to the API expectation (snake_case)
     res.json({
       ...user,
+      plan_type: user.subscriptionTier,
+      subscription_tier: user.subscriptionTier,
+      credits_remaining: user.creditsRemaining,
+      total_scripts: user.totalScripts,
+      total_pins: user.totalPins,
+      total_videos_analyzed: user.totalVideosAnalyzed,
+      onboarding_completed: user.onboardingCompleted,
+      brand_niche: user.brandNiche,
+      primary_goal: user.primaryGoal,
+      created_at: user.createdAt,
       monthly_usage: {
         scans: scanCount,
         scripts: scriptCount
@@ -279,17 +325,45 @@ app.get('/api/me', authenticateClerk, async (req, res) => {
 });
 
 // UPDATE CURRENT USER PROFILE
-app.patch('/api/me', authenticateClerk, async (req, res) => {
-  const { name } = req.body;
-  try {
-    const [updatedUser] = await sql`
-      UPDATE users
-      SET name = ${name || req.user.name}, updated_at = now()
-      WHERE id = ${req.user.id}
-      RETURNING id, name, email, image, subscription_tier, credits_remaining, total_scripts, total_pins
-    `;
+app.patch('/api/me', async (req, res) => {
+  let { userId, name, onboarding_completed, brand_niche, primary_goal } = req.body;
+  if (!userId) return res.status(400).json({ error: 'User ID required' });
 
-    res.json(updatedUser);
+  userId = await resolveInternalId(userId);
+  if (!userId) return res.status(404).json({ error: 'User resolution failed' });
+
+  try {
+    const updatedUser = await prisma.user.update({
+      where: { id: userId },
+      data: {
+        name: name !== undefined ? name : undefined,
+        onboardingCompleted: onboarding_completed !== undefined ? onboarding_completed : undefined,
+        brandNiche: brand_niche !== undefined ? brand_niche : undefined,
+        primaryGoal: primary_goal !== undefined ? primary_goal : undefined,
+      },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        image: true,
+        subscriptionTier: true,
+        creditsRemaining: true,
+        totalScripts: true,
+        totalPins: true,
+        onboardingCompleted: true,
+        brandNiche: true,
+        primaryGoal: true
+      }
+    });
+
+    res.json({
+      ...updatedUser,
+      plan_type: updatedUser.subscriptionTier,
+      subscription_tier: updatedUser.subscriptionTier,
+      onboarding_completed: updatedUser.onboardingCompleted,
+      brand_niche: updatedUser.brandNiche,
+      primary_goal: updatedUser.primaryGoal
+    });
   } catch (err) {
     console.error('Update profile error:', err);
     res.status(500).json({ error: 'Failed to update profile' });
@@ -368,11 +442,14 @@ app.get('/api/test-tiktok', async (req, res) => {
 
 // Private Vault - Save analyzed video to user collection
 app.post('/api/save-to-vault', async (req, res) => {
-  const { userId, title, videoUrl, visualDna } = req.body;
+  let { userId, title, videoUrl, visualDna } = req.body;
 
   if (!userId || !videoUrl) {
     return res.status(400).json({ error: 'User ID and Video URL are required' });
   }
+
+  userId = await resolveInternalId(userId);
+  if (!userId) return res.status(404).json({ error: 'User not found' });
 
   try {
     const [data] = await sql`
@@ -394,11 +471,14 @@ app.post('/api/save-to-vault', async (req, res) => {
 // STANDALONE VIDEO ANALYSIS ENDPOINT
 // Private Vault - Fetch user's saved ads
 app.get('/api/user-ads', async (req, res) => {
-  const { userId, search, niche } = req.query;
+  let { userId, search, niche } = req.query;
 
   if (!userId) {
     return res.status(400).json({ error: 'User ID is required' });
   }
+
+  userId = await resolveInternalId(userId);
+  if (!userId) return res.status(404).json({ error: 'User not found' });
 
   try {
     let ads;
@@ -433,12 +513,22 @@ app.get('/api/user-ads', async (req, res) => {
 });
 
 // Helper to check monthly limits for free users
-async function checkLimits(userId, type) {
+async function checkLimits(inputUserId, type) {
   try {
+    const userId = await resolveInternalId(inputUserId);
+    if (!userId) return { allowed: true };
+
     const [user] = await sql`SELECT subscription_tier FROM users WHERE id = ${userId}`;
     const tier = user?.subscription_tier || 'free';
 
-    if (tier !== 'free') return { allowed: true };
+    const limits = {
+      free: 3,
+      creator: 30,
+      studio: 250,
+      agency: 250 // Backward compatibility
+    };
+
+    const userLimit = limits[tier] || 3;
 
     const oneMonthAgo = new Date();
     oneMonthAgo.setDate(oneMonthAgo.getDate() - 30);
@@ -448,7 +538,7 @@ async function checkLimits(userId, type) {
         SELECT count(*)::int FROM lounge_sessions 
         WHERE user_id = ${userId} AND updated_at > ${oneMonthAgo}
       `;
-      return { allowed: count < 3, count, limit: 3 };
+      return { allowed: count < userLimit, count, limit: userLimit };
     }
 
     if (type === 'script') {
@@ -456,7 +546,7 @@ async function checkLimits(userId, type) {
         SELECT count(*)::int FROM scripts 
         WHERE user_id = ${userId} AND created_at > ${oneMonthAgo}
       `;
-      return { allowed: count < 3, count, limit: 3 };
+      return { allowed: count < userLimit, count, limit: userLimit };
     }
 
     return { allowed: true };
@@ -466,87 +556,15 @@ async function checkLimits(userId, type) {
   }
 }
 
-// STANDALONE VIDEO ANALYSIS ENDPOINT (URL Based)
-app.post('/api/analyze-video-url', async (req, res) => {
-  const { videoUrl, userId } = req.body;
-
-  if (!videoUrl) {
-    return res.status(400).json({ error: 'Video URL is required' });
-  }
-
-  if (!process.env.GROQ_API_KEY) {
-    return res.status(503).json({ error: 'Groq API not configured' });
-  }
-
-  // Plan Gating: Check monthly scan limits for free users
-  if (userId) {
-    const limit = await checkLimits(userId, 'scan');
-    if (!limit.allowed) {
-      return res.status(403).json({
-        error: 'Monthly Scan Limit Reached',
-        details: `Free users are limited to 3 scans per month. You have used ${limit.count}/${limit.limit}. Please upgrade to lock in the Founding Rate!`,
-        upgradeRequired: true
-      });
-    }
-  }
-
-  try {
-    console.log('🎥 Locating Viral DNA from URL...');
-    const { frames, audioPath } = await extractFrames(videoUrl);
-
-    if (!frames || frames.length === 0) {
-      throw new Error('No frames could be extracted from this URL.');
-    }
-
-    // Transcription in parallel or sequence
-    let transcript = "";
-    if (audioPath) {
-      try {
-        transcript = await transcribeAudio(audioPath);
-        console.log('🎙️ Transcript Extracted:', transcript.substring(0, 50) + '...');
-      } catch (err) {
-        console.warn('⚠️ Transcription failed, proceeding with vision only:', err.message);
-      }
-    }
-
-    console.log('🧠 Analyzing Multi-Modal Masterclass Psychology...');
-    const analysis = await analyzeVideoFrames(frames, `Analysis of: ${videoUrl}`, transcript);
-
-    // Fuse transcript into analysis for the chat context
-    analysis.transcript = transcript;
-
-    console.log('✅ Masterclass DNA Extraction Complete');
-
-    // Increment total_videos_analyzed
-    if (userId) {
-      try {
-        await sql`UPDATE users SET total_videos_analyzed = total_videos_analyzed + 1 WHERE id = ${userId}`;
-      } catch (err) {
-        console.warn('Failed to increment total_videos_analyzed:', err.message);
-      }
-    }
-
-    res.json({
-      success: true,
-      analysis,
-      framesAnalyzed: frames.length,
-      hasAudio: !!transcript
-    });
-
-  } catch (error) {
-    console.error('Video URL analysis error:', error);
-    res.status(500).json({
-      error: 'Failed to extract DNA from URL',
-      details: error.message
-    });
-  }
-});
-
 // ============================================
 // BATCH URL PROCESSING (Agency Only)
 // ============================================
-app.post('/api/batch-analyze', authenticateClerk, async (req, res) => {
-  const { urls } = req.body;
+app.post('/api/batch-analyze', async (req, res) => {
+  let { urls, userId } = req.body;
+  if (!userId) return res.status(400).json({ error: 'User ID required' });
+
+  userId = await resolveInternalId(userId);
+  if (!userId) return res.status(404).json({ error: 'User not found' });
 
   if (!urls || !Array.isArray(urls) || urls.length === 0) {
     return res.status(400).json({ error: 'Please provide an array of URLs' });
@@ -556,8 +574,9 @@ app.post('/api/batch-analyze', authenticateClerk, async (req, res) => {
     return res.status(400).json({ error: 'Maximum 10 URLs per batch' });
   }
 
-  // Plan Gating: Agency Only
-  const tier = req.user.subscription_tier || 'free';
+  // Plan Gating
+  const [userData] = await sql`SELECT subscription_tier FROM users WHERE id = ${userId}`;
+  const tier = userData?.subscription_tier || 'free';
   if (tier !== 'agency') {
     return res.status(403).json({
       error: 'Agency Access Required',
@@ -565,7 +584,7 @@ app.post('/api/batch-analyze', authenticateClerk, async (req, res) => {
     });
   }
 
-  console.log(`📦 Batch processing ${urls.length} URLs for user ${req.user.id}`);
+  console.log(`📦 Batch processing ${urls.length} URLs for user ${userId}`);
 
   const results = [];
   // Process in chunks or parallel with limit to avoid overwhelming CPU/Disk
@@ -596,7 +615,7 @@ app.post('/api/batch-analyze', authenticateClerk, async (req, res) => {
 
       // Increment stats
       try {
-        await sql`UPDATE users SET total_videos_analyzed = total_videos_analyzed + 1 WHERE id = ${req.user.id}`;
+        await sql`UPDATE users SET total_videos_analyzed = total_videos_analyzed + 1 WHERE id = ${userId}`;
       } catch (err) {
         console.warn('Failed to increment stat:', err.message);
       }
@@ -637,11 +656,16 @@ app.post('/api/batch-analyze', authenticateClerk, async (req, res) => {
 // ============================================
 // EXPORT DNA REPORT (Agency Only)
 // ============================================
-app.post('/api/export-report', authenticateClerk, async (req, res) => {
-  const { analysis, videoUrl } = req.body;
+app.post('/api/export-report', async (req, res) => {
+  let { analysis, videoUrl, userId } = req.body;
+  if (!userId) return res.status(400).json({ error: 'User ID required' });
 
-  // Plan Gating: Agency Only
-  const tier = req.user.subscription_tier || 'free';
+  userId = await resolveInternalId(userId);
+  if (!userId) return res.status(404).json({ error: 'User not found' });
+
+  // Plan Gating
+  const [user] = await sql`SELECT subscription_tier FROM users WHERE id = ${userId}`;
+  const tier = user?.subscription_tier || 'free';
   if (tier !== 'agency') {
     return res.status(403).json({
       error: 'Agency Access Required',
@@ -701,16 +725,23 @@ app.post('/api/export-report', authenticateClerk, async (req, res) => {
 // ============================================
 // PLAN CHECK ENDPOINT
 // ============================================
-app.get('/api/plan-check', authenticateClerk, async (req, res) => {
+app.get('/api/plan-check', async (req, res) => {
+  let userId = req.query.userId;
+  if (!userId) return res.status(400).json({ error: 'User ID required' });
+
+  userId = await resolveInternalId(userId);
+  if (!userId) return res.status(404).json({ error: 'User not found' });
+
   try {
-    const [user] = await sql`SELECT subscription_tier, subscription_status FROM users WHERE id = ${req.user.id}`;
+    const [user] = await sql`SELECT subscription_tier, subscription_status FROM users WHERE id = ${userId}`;
     if (!user) return res.status(404).json({ error: 'User not found' });
 
     const tier = user.subscription_tier || 'free';
     const limits = {
-      free: { scans_per_month: 3, scripts_per_month: 3, batch: false, export: false },
-      founding: { scans_per_month: -1, scripts_per_month: -1, batch: false, export: false },
-      agency: { scans_per_month: -1, scripts_per_month: -1, batch: true, export: true },
+      free: { scans_per_month: 3, scripts_per_month: 3, batch: false, export: false, team: false },
+      creator: { scans_per_month: 30, scripts_per_month: 30, batch: false, export: false, team: false },
+      studio: { scans_per_month: 250, scripts_per_month: 250, batch: true, export: true, team: true },
+      agency: { scans_per_month: 250, scripts_per_month: 250, batch: true, export: true, team: true },
     };
 
     // Fetch current monthly usage
@@ -719,12 +750,12 @@ app.get('/api/plan-check', authenticateClerk, async (req, res) => {
 
     const [{ scanCount }] = await sql`
       SELECT count(*)::int as "scanCount" FROM lounge_sessions 
-      WHERE user_id = ${req.user.id} AND updated_at > ${oneMonthAgo}
+      WHERE user_id = ${userId} AND updated_at > ${oneMonthAgo}
     `;
 
     const [{ scriptCount }] = await sql`
       SELECT count(*)::int as "scriptCount" FROM scripts 
-      WHERE user_id = ${req.user.id} AND created_at > ${oneMonthAgo}
+      WHERE user_id = ${userId} AND created_at > ${oneMonthAgo}
     `;
 
     res.json({
@@ -742,16 +773,12 @@ app.get('/api/plan-check', authenticateClerk, async (req, res) => {
   }
 });
 
-app.post('/api/analyze-video', authenticateClerk, upload.single('video'), async (req, res) => {
-  if (!req.file) {
-    return res.status(400).json({ error: 'No video file provided' });
-  }
+app.post('/api/analyze-video', upload.single('video'), async (req, res) => {
+  let userId = req.body.userId;
+  if (!userId) return res.status(400).json({ error: 'User ID required' });
 
-  if (!process.env.GROQ_API_KEY) {
-    return res.status(503).json({ error: 'Groq API not configured' });
-  }
-
-  const userId = req.user.id;
+  userId = await resolveInternalId(userId);
+  if (!userId) return res.status(404).json({ error: 'User resolution failed' });
 
   // Plan Gating: Check monthly scan limits for free users
   if (userId) {
@@ -812,9 +839,83 @@ app.post('/api/analyze-video', authenticateClerk, upload.single('video'), async 
   }
 });
 
-app.post('/api/generate-script', authenticateClerk, async (req, res) => {
-  const { productName, description, adId, answers, privateDna } = req.body;
-  const userId = req.user.id;
+app.post('/api/analyze-video-url', async (req, res) => {
+  let { videoUrl, userId } = req.body;
+  if (!videoUrl) return res.status(400).json({ error: 'Video URL required' });
+
+  userId = await resolveInternalId(userId);
+  if (!userId) return res.status(404).json({ error: 'User resolution failed' });
+
+  if (!process.env.GROQ_API_KEY) {
+    return res.status(503).json({ error: 'Groq API not configured' });
+  }
+
+  // Plan Gating: Check monthly scan limits for free users
+  if (userId) {
+    const limit = await checkLimits(userId, 'scan');
+    if (!limit.allowed) {
+      return res.status(403).json({
+        error: 'Monthly Scan Limit Reached',
+        details: `Free users are limited to 3 scans per month. You have used ${limit.count}/${limit.limit}. Please upgrade to lock in the Founding Rate!`,
+        upgradeRequired: true
+      });
+    }
+  }
+
+  try {
+    console.log(`🎥 Initiating URL Extraction for: ${videoUrl}`);
+    const { frames, audioPath } = await extractFrames(videoUrl);
+
+    if (!frames || frames.length === 0) {
+      throw new Error('No frames could be extracted from this URL.');
+    }
+
+    // Transcription
+    let transcript = "";
+    if (audioPath) {
+      try {
+        transcript = await transcribeAudio(audioPath);
+        console.log('🎙️ Transcript Extracted:', transcript.substring(0, 50) + '...');
+      } catch (err) {
+        console.warn('⚠️ Transcription failed:', err.message);
+      }
+    }
+
+    console.log('🧠 Auditing Multi-Modal Mastery...');
+    const analysis = await analyzeVideoFrames(frames, 'URL Analysis', transcript);
+
+    // Increment total_videos_analyzed
+    if (userId) {
+      try {
+        await sql`UPDATE users SET total_videos_analyzed = total_videos_analyzed + 1 WHERE id = ${userId}`;
+      } catch (err) {
+        console.warn('Failed to increment total_videos_analyzed:', err.message);
+      }
+    }
+
+    res.json({
+      success: true,
+      analysis,
+      framesAnalyzed: frames.length,
+      hasAudio: !!transcript
+    });
+
+  } catch (error) {
+    console.error('Video URL analysis error:', error);
+    res.status(500).json({
+      error: 'URL Video audit failed',
+      details: error.message
+    });
+  }
+});
+
+
+app.post('/api/generate-script', async (req, res) => {
+  let { productName, description, adId, answers, privateDna, userId } = req.body;
+  if (!userId) return res.status(400).json({ error: 'User ID required' });
+
+  userId = await resolveInternalId(userId);
+  if (!userId) return res.status(404).json({ error: 'User resolution failed' });
 
   if (!productName || !description) {
     return res.status(400).json({ error: 'Product name and description are required' });
@@ -1035,12 +1136,12 @@ app.post('/api/generate-script', authenticateClerk, async (req, res) => {
     const fullGuide = JSON.parse(completion.choices[0]?.message?.content || '{}');
     const scriptContent = fullGuide.summary || fullGuide; // Backward compatibility for DB save
 
-    // Save to Supabase if connected
-    if (sql) {
+    // Save to database
+    if (sql && userId) {
       try {
         await sql`
           INSERT INTO scripts (user_id, product_name, description, script_content, created_at)
-          VALUES (${req.user.id}, ${productName}, ${description}, ${JSON.stringify(scriptContent)}, ${new Date()})
+          VALUES (${userId}, ${productName}, ${description}, ${JSON.stringify(scriptContent)}, ${new Date()})
         `;
       } catch (dbErr) {
         console.error('Failed to save to DB:', dbErr);
@@ -1048,12 +1149,12 @@ app.post('/api/generate-script', authenticateClerk, async (req, res) => {
     }
 
     // Increment total_scripts in profiles
-    if (sql && req.user.id) {
+    if (sql && userId) {
       try {
         await sql`
           UPDATE users 
           SET total_scripts = total_scripts + 1
-          WHERE id = ${req.user.id}
+          WHERE id = ${userId}
         `;
       } catch (statErr) {
         console.error('Failed to increment scripts stat:', statErr);
@@ -1130,7 +1231,11 @@ app.get('/api/ads', async (req, res) => {
 });
 
 app.post('/api/script-strategy-questions', async (req, res) => {
-  const { adId, productName, description, privateDna } = req.body;
+  let { adId, productName, description, privateDna, userId } = req.body;
+
+  if (!userId) return res.status(400).json({ error: 'User ID required' });
+  userId = await resolveInternalId(userId);
+  if (!userId) return res.status(404).json({ error: 'User resolution failed' });
 
   if (!adId && !privateDna) return res.status(400).json({ error: 'Ad ID or Private DNA is required' });
 
@@ -1205,9 +1310,12 @@ app.post('/api/script-strategy-questions', async (req, res) => {
 
 // Creative Director Chat Loop
 app.post('/api/creative-director-chat', async (req, res) => {
-  const { messages, dna, isRoastMode } = req.body;
+  let { messages, dna, isRoastMode, userId } = req.body;
 
   if (!groq) return res.status(503).json({ error: 'AI service not available' });
+
+  userId = await resolveInternalId(userId);
+  if (!userId) return res.status(404).json({ error: 'User resolution failed' });
 
   try {
     const isIntro = !messages || messages.length === 0;
@@ -1257,13 +1365,18 @@ app.post('/api/creative-director-chat', async (req, res) => {
 
     let completion;
     const MAX_RETRIES = 3;
+    const sanitizedMessages = (messages || []).map(msg => ({
+      role: msg.role,
+      content: msg.content
+    }));
+
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
       try {
         console.log(`💬 Generating script(attempt ${attempt} / ${MAX_RETRIES})...`);
         completion = await groq.chat.completions.create({
           messages: [
             { role: "system", content: systemPrompt },
-            ...(messages || [])
+            ...sanitizedMessages
           ],
           model: "llama-3.3-70b-versatile",
           temperature: 0.7,
@@ -1289,9 +1402,12 @@ app.post('/api/creative-director-chat', async (req, res) => {
 });
 
 // Session Management Endpoints
-app.post('/api/save-lounge-session', authenticateClerk, async (req, res) => {
-  const { sessionId, videoUrl, dna, messages, title } = req.body;
-  const userId = req.user.id; // Corrected to use authenticated user ID
+app.post('/api/save-lounge-session', async (req, res) => {
+  let { sessionId, videoUrl, dna, messages, title, userId } = req.body;
+  if (!userId) return res.status(400).json({ error: 'User ID required' });
+
+  userId = await resolveInternalId(userId);
+  if (!userId) return res.status(404).json({ error: 'User resolution failed' });
 
   const msgCount = Array.isArray(messages) ? messages.length : 0;
   console.log(`💾 Persisting: User ${userId} | Session ${sessionId || 'NEW'} | Messages: ${msgCount}`);
@@ -1332,8 +1448,12 @@ app.post('/api/save-lounge-session', authenticateClerk, async (req, res) => {
   }
 });
 
-app.get('/api/user-sessions', authenticateClerk, async (req, res) => {
-  const userId = req.user.id; // Corrected to use authenticated user
+app.get('/api/user-sessions', async (req, res) => {
+  let userId = req.query.userId;
+  if (!userId) return res.status(400).json({ error: 'User ID required' });
+
+  userId = await resolveInternalId(userId);
+  if (!userId) return res.status(404).json({ error: 'User not found' });
 
   // 💎 MASTER ADMIN SHORT-CIRCUIT 🚀
   if (userId === '00000000-0000-0000-0000-000000000000') {
@@ -1343,15 +1463,28 @@ app.get('/api/user-sessions', authenticateClerk, async (req, res) => {
   console.log(`🔍 User Requesting History: ${userId}`);
 
   try {
-    const data = await sql`
-      SELECT id, title, video_url, updated_at as created_at 
-      FROM lounge_sessions 
-      WHERE user_id = ${userId}
-      ORDER BY updated_at DESC
-      LIMIT 20
-    `;
-    console.log(`✅ Returned ${data.length} sessions for ${userId}`);
-    res.json(data);
+    const sessions = await prisma.loungeSession.findMany({
+      where: { userId },
+      select: {
+        id: true,
+        title: true,
+        videoUrl: true,
+        updatedAt: true
+      },
+      orderBy: { updatedAt: 'desc' },
+      take: 20
+    });
+
+    // Map back to API format (created_at is actually updatedAt in this context)
+    const formattedSessions = sessions.map(s => ({
+      id: s.id,
+      title: s.title,
+      video_url: s.videoUrl,
+      created_at: s.updatedAt
+    }));
+
+    console.log(`✅ Returned ${formattedSessions.length} sessions for ${userId}`);
+    res.json(formattedSessions);
   } catch (error) {
     console.error('❌ Fetch sessions error:', error);
     res.status(500).json({ error: 'Failed' });
@@ -1372,7 +1505,11 @@ app.get('/api/lounge-session/:id', async (req, res) => {
 });
 
 app.post('/api/generate-final-script', async (req, res) => {
-  const { messages, dna, userId } = req.body;
+  let { messages, dna, userId } = req.body;
+  if (!userId) return res.status(400).json({ error: 'User ID required' });
+
+  userId = await resolveInternalId(userId);
+  if (!userId) return res.status(404).json({ error: 'User resolution failed' });
 
   if (!groq) return res.status(503).json({ error: 'AI service not available' });
 
@@ -1438,150 +1575,18 @@ RETURNING *
   }
 });
 
-// ============================================
-// COMPETITOR SPY (Founding+ Only)
-// ============================================
-app.post('/api/competitor-spy', authenticateClerk, async (req, res) => {
-  const { profileUrl } = req.body;
-
-  if (!profileUrl) {
-    return res.status(400).json({ error: 'TikTok profile URL or username is required' });
-  }
-
-  // Plan Gating: Founding or Agency
-  const tier = req.user.subscription_tier || 'free';
-  if (tier === 'free') {
-    return res.status(403).json({
-      error: 'Spy Access Restricted',
-      details: 'Competitor Spying requires a Founding or Agency plan. Upgrade today to monitor rivals.'
-    });
-  }
-
-  if (!process.env.APIFY_API_TOKEN) {
-    return res.status(503).json({ error: 'Scraping service not configured' });
-  }
-
-  try {
-    let username = profileUrl.trim();
-    let platform = 'tiktok';
-
-    if (username.includes('instagram.com')) {
-      platform = 'instagram';
-      // Extract from: https://www.instagram.com/username/
-      const match = username.match(/instagram\.com\/([a-zA-Z0-9_.]+)/);
-      if (match) username = match[1];
-    } else if (username.includes('tiktok.com/')) {
-      const match = username.match(/@([a-zA-Z0-9_.]+)/);
-      if (match) username = match[1];
-      else {
-        const parts = username.split('/').filter(Boolean);
-        const last = parts[parts.length - 1];
-        username = last.startsWith('@') ? last.slice(1) : last;
-      }
-    }
-    username = username.replace('@', '').split(/[?#/]/)[0];
-
-    console.log(`🕵️ Competitor Spy: Scanning @${username} on ${platform}...`);
-
-    const apifyClient = new ApifyClient({ token: process.env.APIFY_API_TOKEN });
-    let videos = [];
-
-    if (platform === 'tiktok') {
-      const run = await apifyClient.actor('clockworks/tiktok-scraper').call({
-        profiles: [`https://www.tiktok.com/@${username}`],
-        resultsPerPage: 20,
-        shouldDownloadVideos: false,
-        shouldDownloadCovers: true,
-      }, { timeout: 120 });
-
-      if (!run?.defaultDatasetId) {
-        throw new Error('TikTok Scraper failed to initialize dataset.');
-      }
-
-      const { items } = await apifyClient.dataset(run.defaultDatasetId).listItems();
-
-      if (items && items.length > 0) {
-        videos = items
-          .filter(item => item.webVideoUrl || item.videoUrl)
-          .sort((a, b) => (b.playCount || 0) - (a.playCount || 0))
-          .map(item => ({
-            id: item.id,
-            url: item.webVideoUrl || item.videoUrl,
-            thumbnail: item.videoMeta?.coverUrl || item.covers?.default || '',
-            caption: (item.text || '').substring(0, 200),
-            views: item.playCount || 0,
-            likes: item.diggCount || 0,
-            comments: item.commentCount || 0,
-            shares: item.shareCount || 0,
-            date: item.createTimeISO || item.createTime,
-            music: item.musicMeta?.musicName || '',
-          }));
-      }
-    } else {
-      // Instagram Spying (Using Apify Instagram Scraper)
-      const run = await apifyClient.actor('apify/instagram-scraper').call({
-        usernames: [username],
-        resultsType: 'posts',
-        resultsLimit: 20,
-        addParentData: true,
-      }, { timeout: 120 });
-
-      if (!run?.defaultDatasetId) {
-        throw new Error('Instagram Scraper failed to initialize dataset.');
-      }
-
-      const { items } = await apifyClient.dataset(run.defaultDatasetId).listItems();
-
-      if (items && items.length > 0) {
-        videos = items
-          .filter(item => item.type === 'Video' || item.type === 'Sidecar')
-          .sort((a, b) => (b.videoPlayCount || b.likesCount || 0) - (a.videoPlayCount || a.likesCount || 0))
-          .map(item => ({
-            id: item.id,
-            url: item.url,
-            thumbnail: item.displayUrl,
-            caption: (item.caption || '').substring(0, 200),
-            views: item.videoPlayCount || 0,
-            likes: item.likesCount || 0,
-            comments: item.commentsCount || 0,
-            shares: 0,
-            date: item.timestamp,
-            music: '',
-          }));
-      }
-    }
-
-    if (videos.length === 0) {
-      return res.json({ success: true, username, videos: [], message: `No videos found for this ${platform} profile.` });
-    }
-
-    console.log(`🕵️ Competitor Spy: Found ${videos.length} videos for @${username}`);
-
-    res.json({
-      success: true,
-      username,
-      videoCount: videos.length,
-      videos,
-    });
-
-  } catch (error) {
-    console.error('Competitor Spy error:', error);
-    res.status(500).json({ error: 'Failed to scan competitor profile', details: error.message });
-  }
-});
 
 // ============================================
 // TEAM MEMBERS (Agency Only)
 // ============================================
 
 // Invite a team member
-app.post('/api/team/invite', authenticateClerk, async (req, res) => {
-  const { email } = req.body;
+app.post('/api/team/invite', async (req, res) => {
+  const { email, userId } = req.body;
+  if (!userId) return res.status(400).json({ error: 'User ID required' });
 
-  if (!email) return res.status(400).json({ error: 'Email is required' });
-
-  // Plan Gating: Agency Only
-  const tier = req.user.subscription_tier || 'free';
+  const [user] = await sql`SELECT subscription_tier FROM users WHERE id = ${userId}`;
+  const tier = user?.subscription_tier || 'free';
   if (tier !== 'agency') {
     return res.status(403).json({
       error: 'Agency Access Required',
@@ -1591,65 +1596,59 @@ app.post('/api/team/invite', authenticateClerk, async (req, res) => {
 
   try {
 
+    const memberEmail = email; // For context
     // Check member limit (max 5)
-    const [{ count }] = await sql`SELECT count(*)::int FROM team_members WHERE owner_id = ${req.user.id}`;
+    const [{ count }] = await sql`SELECT count(*)::int FROM team_members WHERE owner_id = ${userId}`;
     if (count >= 5) {
       return res.status(400).json({ error: 'Maximum 5 team members allowed on the Agency plan.' });
     }
 
     // Check if already invited
-    const [existing] = await sql`SELECT id FROM team_members WHERE owner_id = ${req.user.id} AND member_email = ${email}`;
+    const [existing] = await sql`SELECT id FROM team_members WHERE owner_id = ${userId} AND member_email = ${email}`;
     if (existing) {
-      return res.status(400).json({ error: 'This email has already been invited.' });
+      return res.status(400).json({ error: 'This email is already a team member.' });
     }
 
     // Check if user exists in system
     const [existingUser] = await sql`SELECT id FROM users WHERE email = ${email}`;
 
-    const [member] = await sql`
-      INSERT INTO team_members (owner_id, member_email, member_user_id, status, joined_at)
-      VALUES (${req.user.id}, ${email}, ${existingUser?.id || null}, ${existingUser ? 'active' : 'pending'}, ${existingUser ? new Date() : null})
-      RETURNING *
+    await sql`
+      INSERT INTO team_members (owner_id, member_email, role)
+      VALUES (${userId}, ${email}, 'member')
     `;
 
-    // If user exists, grant them agency-level access
-    if (existingUser) {
-      await sql`UPDATE users SET subscription_tier = 'agency' WHERE id = ${existingUser.id}`;
-    }
-
-    console.log(`👥 Team: ${req.user.email} invited ${email} (${existingUser ? 'active' : 'pending'})`);
-    res.json({ success: true, member });
-
-  } catch (error) {
-    console.error('Team invite error:', error);
+    res.json({ success: true, message: `Invite sent to ${email}` });
+  } catch (err) {
+    console.error('Invite team error:', err);
     res.status(500).json({ error: 'Failed to invite team member' });
   }
 });
 
 // List team members
-app.get('/api/team/members', authenticateClerk, async (req, res) => {
+app.get('/api/team/list', async (req, res) => {
+  const { userId } = req.query;
+  if (!userId) return res.status(400).json({ error: 'User ID required' });
+
+  const ownerId = await resolveInternalId(userId);
+  if (!ownerId) return res.status(404).json({ error: 'User not found' });
+
   try {
-    const members = await sql`
-      SELECT tm.*, u.name as member_name, u.image as member_image
-      FROM team_members tm
-      LEFT JOIN users u ON tm.member_user_id = u.id
-      WHERE tm.owner_id = ${req.user.id}
-      ORDER BY tm.invited_at DESC
-    `;
-    res.json(members);
-  } catch (error) {
-    console.error('Fetch team error:', error);
-    res.status(500).json({ error: 'Failed to fetch team members' });
+    const members = await sql`SELECT * FROM team_members WHERE owner_id = ${ownerId} ORDER BY created_at DESC`;
+    res.json({ members });
+  } catch (err) {
+    console.error('List team error:', err);
+    res.status(500).json({ error: 'Failed to list team' });
   }
 });
-
 // Remove team member
-app.delete('/api/team/remove/:memberId', authenticateClerk, async (req, res) => {
+app.delete('/api/team/remove/:memberId', async (req, res) => {
+  const { userId } = req.body;
+  if (!userId) return res.status(400).json({ error: 'User ID required' });
   try {
     const { memberId } = req.params;
 
     // Get member info before deleting
-    const [member] = await sql`SELECT * FROM team_members WHERE id = ${memberId} AND owner_id = ${req.user.id}`;
+    const [member] = await sql`SELECT * FROM team_members WHERE id = ${memberId} AND owner_id = ${userId}`;
     if (!member) {
       return res.status(404).json({ error: 'Team member not found' });
     }
@@ -1755,6 +1754,7 @@ app.listen(port, async () => {
       try {
         await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN DEFAULT FALSE`;
         await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS total_videos_analyzed INTEGER DEFAULT 0`;
+        await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS clerk_id TEXT UNIQUE`;
 
         // 📨 SUPPORT HUB: Create ticketing table
         await sql`

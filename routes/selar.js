@@ -20,9 +20,17 @@ router.post('/', async (req, res) => {
         const amount = data.amount;
         const status = data.status; // 'success'
         
-        // We can pass custom data through Selar's 'custom_fields' or 'metadata'
-        // Let's assume we pass the userId or plan type
-        const plan = data.plan_type || 'founding'; // Fallback to founding
+        let plan = data.plan_type || data.metadata?.plan_type;
+        
+        // If no plan_type is provided, guess based on amount (Selar amount is usually in base currency, but let's do a basic check)
+        // Adjust these numbers based on your actual Selar currency configuration
+        if (!plan) {
+            if (amount >= 79) {
+                plan = 'studio';
+            } else {
+                plan = 'creator'; // Default fallback
+            }
+        }
 
         if (status === 'success' && email) {
             console.log(`🏆 Selar: Granting ${plan} to ${email}`);

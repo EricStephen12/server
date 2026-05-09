@@ -1,7 +1,6 @@
 const jwt = require('jsonwebtoken');
 const { sql } = require('../db/index');
-const { createClerkClient } = require('@clerk/clerk-sdk-node');
-const clerkClient = createClerkClient({ secretKey: process.env.CLERK_SECRET_KEY });
+
 
 /**
  * Combined Admin Protection Middleware 💎🛡️
@@ -33,24 +32,23 @@ async function adminProtected(req, res, next) {
             // Not a Master Admin JWT, proceed to Clerk check
         }
 
-        // 3. CHECK FOR CLERK SESSION 🛡️
-        try {
-            const session = await clerkClient.verifyToken(sessionToken);
-            const userId = session.sub;
-
+        // 3. CHECK FOR ADMIN STATUS VIA DB (If userId provided) 🛡️
+        const userId = req.body.userId || req.query.userId || req.headers['x-user-id'];
+        
+        if (userId) {
             // Verify Admin status in database
-            const [user] = await sql`SELECT id, is_admin, email, name FROM users WHERE clerk_id = ${userId}`;
+            const [user] = await sql`SELECT id, is_admin, email, name FROM users WHERE id = ${userId}`;
 
-            if (!user || !user.is_admin) {
-                console.warn(`🚨 Admin access denied for unauthorized user: ${userId}`);
-                return res.status(403).json({ error: 'Forbidden: Admin access only.' });
+            if (user && user.is_admin) {
+                req.user = user;
+                return next();
             }
-
-            req.user = { ...user, clerk_id: userId };
-            return next();
-        } catch (clerkErr) {
-            return res.status(401).json({ error: 'Invalid or expired session. Please log in again.' });
+            
+            console.warn(`🚨 Admin access denied for unauthorized user ID: ${userId}`);
+            return res.status(403).json({ error: 'Forbidden: Admin access only.' });
         }
+
+        return res.status(401).json({ error: 'Unauthorized: No valid session or user ID provided.' });
 
     } catch (err) {
         console.error('Admin Auth Error:', err);

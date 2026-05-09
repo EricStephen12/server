@@ -5,19 +5,15 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node index.js",
-    "dev": "node --watch index.js"
+    "dev": "node --watch index.js",
+    "postinstall": "prisma generate"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "description": "",
   "dependencies": {
-    "@clerk/clerk-sdk-node": "^4.13.23",
     "@ffprobe-installer/ffprobe": "^2.1.2",
-    "@google/generative-ai": "^0.24.1",
-    "@polar-sh/sdk": "^0.46.6",
-    "@supabase/supabase-js": "^2.95.3",
-    "apify-client": "^2.22.0",
     "axios": "^1.13.5",
     "bcryptjs": "^3.0.3",
     "cookie-parser": "^1.4.7",
@@ -32,6 +28,8 @@
     "jsonwebtoken": "^9.0.3",
     "multer": "^2.0.2",
     "postgres": "^3.4.8",
+    "prisma": "^6.3.0",
+    "@prisma/client": "^6.3.0",
     "svix": "^1.89.0"
   }
 }
