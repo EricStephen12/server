@@ -117,29 +117,42 @@ async function resolveTikTokUrl(url) {
 async function downloadWithYtDlp(url, destPath) {
     const { exec } = require('child_process');
     const { execSync } = require('child_process');
-    let ytdlp = null;
-    const localBin = path.join(__dirname, '../yt-dlp');
-    const localBinExe = path.join(__dirname, '../yt-dlp.exe');
+    let ytdlp = 'yt-dlp'; // Default to system command
 
-    if (fs.existsSync(localBin)) ytdlp = localBin;
-    else if (fs.existsSync(localBinExe)) ytdlp = localBinExe;
-    else { 
-        try { 
-            const cmd = process.platform === 'win32' ? 'where yt-dlp' : 'which yt-dlp';
-            ytdlp = execSync(cmd, { encoding: 'utf-8' }).split('\n')[0].trim(); 
-        } catch (_) { } 
+    try {
+        // Test if yt-dlp is in path
+        const version = execSync('yt-dlp --version', { encoding: 'utf-8' }).trim();
+        console.log(`✅ Using system yt-dlp version: ${version}`);
+    } catch (e) {
+        // Fallback to local binary if not in path
+        const localBin = path.join(__dirname, '../yt-dlp');
+        const localBinExe = path.join(__dirname, '../yt-dlp.exe');
+        if (fs.existsSync(localBin)) {
+            ytdlp = `"${localBin}"`;
+            console.log('✅ Using local yt-dlp binary');
+        } else if (fs.existsSync(localBinExe)) {
+            ytdlp = `"${localBinExe}"`;
+            console.log('✅ Using local yt-dlp.exe');
+        } else {
+            console.warn('⚠️ yt-dlp not found in PATH or locally. Attempting to proceed with "yt-dlp" command...');
+        }
     }
 
-    if (!ytdlp) throw new Error('yt-dlp not available on this server.');
-    console.log(`⚡ Fallback: Downloading with yt-dlp (${ytdlp})...`);
+    console.log(`⚡ Downloading via yt-dlp: ${url}`);
     return new Promise((resolve, reject) => {
-        exec(`"${ytdlp}" -o "${destPath}" --no-playlist --merge-output-format mp4 "${url}"`,
-            { timeout: 120000 }, (error, stdout, stderr) => {
-                if (error) reject(new Error(`yt-dlp failed: ${error.message}`));
-                else resolve();
-            });
+        // Use best quality but limit to mp4
+        const cmd = `${ytdlp} -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" --no-playlist --merge-output-format mp4 --no-check-certificate -o "${destPath}" "${url}"`;
+        exec(cmd, { timeout: 120000 }, (error, stdout, stderr) => {
+            if (error) {
+                console.error('❌ yt-dlp error output:', stderr);
+                reject(new Error(`yt-dlp failed: ${error.message}`));
+            } else {
+                resolve();
+            }
+        });
     });
 }
+
 
 /**
  * Extract frames from a video URL at specific timestamps.
@@ -156,36 +169,29 @@ async function extractFrames(videoUrl, manualTimestamps = null) {
     try {
         console.log(`🎥 Initiating Elite Extraction for: ${videoUrl}`);
 
-        const isTikTok = videoUrl.includes('tiktok.com');
-        const isInstagram = videoUrl.includes('instagram.com');
-
-        if (isTikTok) {
-            // PRIMARY: Use tikwm API (works on all servers including Render)
-            try {
-                const directUrl = await resolveTikTokUrl(videoUrl);
-                console.log('⚡ Downloading TikTok video via tikwm...');
-                await downloadDirect(directUrl, videoPath);
-            } catch (apiErr) {
-                console.warn('⚠️ tikwm API failed, trying yt-dlp fallback...', apiErr.message);
-                await downloadWithYtDlp(videoUrl, videoPath);
-            }
-        } else if (isInstagram) {
-            console.log('⚡ Downloading Instagram Reel via yt-dlp...');
-            try {
-                await downloadWithYtDlp(videoUrl, videoPath);
-            } catch (igErr) {
-                console.warn('⚠️ yt-dlp failed for Instagram, trying direct download...', igErr.message);
-                await downloadDirect(videoUrl, videoPath);
-            }
-        } else {
-            console.log('⚡ Downloading video from direct URL...');
-            try {
-                await downloadDirect(videoUrl, videoPath);
-            } catch (err) {
-                console.warn('⚠️ Direct download failed, trying yt-dlp fallback...');
-                await downloadWithYtDlp(videoUrl, videoPath);
+        // UNIVERSAL DOWNLOADER: Prioritize yt-dlp for all platforms (TikTok, Reels, Shorts)
+        try {
+            await downloadWithYtDlp(videoUrl, videoPath);
+        } catch (ytdlpErr) {
+            console.warn('⚠️ yt-dlp failed, attempting direct/tikwm fallback...', ytdlpErr.message);
+            
+            const isTikTok = videoUrl.includes('tiktok.com');
+            if (isTikTok) {
+                try {
+                    const directUrl = await resolveTikTokUrl(videoUrl);
+                    await downloadDirect(directUrl, videoPath);
+                } catch (tikErr) {
+                    throw new Error(`Universal download failed: ${ytdlpErr.message} && ${tikErr.message}`);
+                }
+            } else {
+                try {
+                    await downloadDirect(videoUrl, videoPath);
+                } catch (dirErr) {
+                    throw new Error(`Universal download failed: ${ytdlpErr.message} && ${dirErr.message}`);
+                }
             }
         }
+
 
         if (!fs.existsSync(videoPath)) {
             throw new Error('Video download failed — file not created.');

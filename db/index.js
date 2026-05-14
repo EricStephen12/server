@@ -3,7 +3,7 @@ const dotenv = require('dotenv');
 
 dotenv.config();
 
-const connectionString = process.env.DATABASE_URL;
+const connectionString = process.env.DATABASE_URL?.trim();
 
 if (!connectionString) {
     console.error('❌ DATABASE_URL is missing in server/.env');
@@ -11,10 +11,10 @@ if (!connectionString) {
 
 // Neon serverless connection
 const sql = postgres(connectionString, {
-    ssl: { rejectUnauthorized: false }, // Avoid cert issues locally
+    ssl: 'require',
     max: 10,
-    idle_timeout: 60,
-    connect_timeout: 60, // Increased timeout
+    idle_timeout: 20,
+    connect_timeout: 30,
 });
 
 /**

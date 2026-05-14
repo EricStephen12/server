@@ -1,0 +1,11 @@
+node_modules
+.git
+.env
+dist
+build
+.next
+.modal
+__pycache__
+*.pyc
+venv
+.venv

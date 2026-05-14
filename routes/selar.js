@@ -25,7 +25,7 @@ router.post('/', async (req, res) => {
         // If no plan_type is provided, guess based on amount (Selar amount is usually in base currency, but let's do a basic check)
         // Adjust these numbers based on your actual Selar currency configuration
         if (!plan) {
-            if (amount >= 79) {
+            if (amount >= 59) {
                 plan = 'studio';
             } else {
                 plan = 'creator'; // Default fallback
