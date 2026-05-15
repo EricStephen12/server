@@ -1,19 +1,31 @@
 const express = require('express');
 const { sql } = require('../db/index');
 const router = express.Router();
+const crypto = require('crypto');
 
 /**
  * Polar.sh Webhook Handler
  * Syncs Polar payment/subscription events to PostgreSQL
  */
-router.post('/', async (req, res) => {
-    // Polar sends event data in the body
-    const event = req.body;
+router.post('/', express.raw({ type: 'application/json' }), async (req, res) => {
+    const signature = req.headers['polar-webhook-signature'];
+    const secret = process.env.POLAR_WEBHOOK_SECRET;
     
-    // Security: In production, verify the webhook signature using Polar's secret!
-    console.log(`❄️ Polar Webhook Received: [${event.type}]`);
+    // Security check: Verify the signature if secret is provided
+    if (secret && signature) {
+        const hmac = crypto.createHmac('sha256', secret);
+        const digest = hmac.update(req.body).digest('hex');
+        
+        if (signature !== digest) {
+            console.error('❌ Polar Webhook: Invalid Signature');
+            return res.status(401).json({ error: 'Invalid signature' });
+        }
+    }
 
     try {
+        const event = JSON.parse(req.body.toString());
+        console.log(`❄️ Polar Webhook Received: [${event.type}]`);
+
         // We only care about successful orders or subscriptions
         if (event.type === 'order.created' || event.type === 'subscription.created') {
             const data = event.data;
@@ -23,7 +35,7 @@ router.post('/', async (req, res) => {
             let plan = data.metadata?.plan_type;
             
             if (!plan && data.amount) {
-                // Polar amount is in cents, so $79 is 7900
+                // Polar amount is in cents, so $59 is 5900
                 if (data.amount >= 5900) {
                     plan = 'studio';
                 } else {
