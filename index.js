@@ -14,6 +14,7 @@ const adminAuthRouter = require('./routes/adminAuth');
 const supportRouter = require('./routes/support');
 // const selarWebhooks = require('./routes/selar');
 const polarWebhooks = require('./routes/polar');
+const userRouter = require('./routes/user');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 
@@ -126,6 +127,7 @@ const [newUser] = await sql`
 app.use('/api/admin/auth', adminAuthRouter);
 app.use('/api/admin', adminRouter);
 app.use('/api/support', supportRouter);
+app.use('/api', userRouter);
 
 app.get('/api/debug', async (req, res) => {
   const { execSync } = require('child_process');
@@ -198,7 +200,7 @@ try {
   res.json({ status: 'debug_complete', report });
 });
 
-app.post('/api/auth/register', async (req, res) => {
+/* app.post('/api/auth/register', async (req, res) => {
   const { email, password, name } = req.body;
   const bcrypt = require('bcryptjs');
 
@@ -226,9 +228,9 @@ const [newUser] = await sql`
     console.error('Registration error:', err);
     res.status(500).json({ error: 'Failed to create user' });
   }
-});
+}); */
 
-app.get('/api/me', async (req, res) => {
+/* app.get('/api/me', async (req, res) => {
   let userId = req.query.userId;
   const { email, name } = req.query;
   userId = await resolveInternalId(userId, { email, name });
@@ -305,9 +307,9 @@ res.json({
     console.error('Fetch profile error:', err);
     res.status(500).json({ error: 'Failed to fetch profile' });
   }
-});
+}); */
 
-app.patch('/api/me', async (req, res) => {
+/* app.patch('/api/me', async (req, res) => {
   let { userId, name, onboarding_completed, brand_niche, primary_goal } = req.body;
   if (!userId) return res.status(400).json({ error: 'User ID required' });
 
@@ -350,7 +352,7 @@ app.patch('/api/me', async (req, res) => {
     console.error('Update profile error:', err);
     res.status(500).json({ error: 'Failed to update profile' });
   }
-});
+}); */
 
 app.get('/api/test-tiktok', async (req, res) => {
   const videoUrl = req.query.url;
@@ -679,7 +681,7 @@ const [user] = await sql`SELECT subscription_tier FROM users WHERE id = ${userId
   }
 });
 
-app.get('/api/plan-check', async (req, res) => {
+/* app.get('/api/plan-check', async (req, res) => {
   let userId = req.query.userId;
   if (!userId) return res.status(400).json({ error: 'User ID required' });
 
@@ -724,7 +726,7 @@ const oneMonthAgo = new Date();
     console.error('Plan check error:', err);
     res.status(500).json({ error: 'Plan check failed' });
   }
-});
+}); */
 
 app.post('/api/analyze-video', upload.single('video'), async (req, res) => {
   let userId = req.body.userId;
@@ -1429,6 +1431,18 @@ app.get('/api/lounge-session/:id', async (req, res) => {
     res.status(500).json({ error: 'Failed to fetch session' });
   }
 });
+
+app.delete('/api/lounge-session/:id', async (req, res) => {
+  try {
+    const { id: sessionId } = req.params;
+    await sql`DELETE FROM lounge_sessions WHERE id = ${sessionId}`;
+    res.json({ success: true, message: 'Session deleted successfully' });
+  } catch (error) {
+    console.error('Delete session error:', error);
+    res.status(500).json({ error: 'Failed to delete session' });
+  }
+});
+
 
 app.post('/api/generate-final-script', async (req, res) => {
   let { messages, dna, userId } = req.body;
