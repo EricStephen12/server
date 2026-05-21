@@ -63,6 +63,42 @@ router.post('/', express.raw({ type: 'application/json' }), async (req, res) => 
                 
                 return res.status(200).json({ success: true, message: `Upgraded to ${plan}` });
             }
+        } else if (event.type === 'subscription.updated' || event.type === 'subscription.canceled' || event.type === 'subscription.revoked') {
+            const data = event.data;
+            const email = data.customer_email || data.user_email || data.email;
+            
+            // Check if it's canceled or revoked
+            if (event.type === 'subscription.canceled' || event.type === 'subscription.revoked' || data.status === 'canceled' || data.status === 'incomplete') {
+                if (email) {
+                    console.log(`📉 Polar: Downgrading ${email} to free plan (Canceled/Revoked)`);
+                    
+                    await sql`
+                        UPDATE users 
+                        SET subscription_tier = 'free', 
+                            updated_at = ${new Date()}
+                        WHERE email = ${email}
+                    `;
+                    
+                    return res.status(200).json({ success: true, message: `Downgraded ${email} to free` });
+                }
+            } else if (event.type === 'subscription.updated') {
+                 // For updates, we just ensure they have the correct plan active
+                 let plan = data.metadata?.plan_type;
+                 if (!plan && data.amount) plan = data.amount >= 5900 ? 'studio' : 'creator';
+                 if (!plan && data.product?.name) plan = data.product.name.toLowerCase().includes('studio') ? 'studio' : 'creator';
+                 if (!plan) plan = 'creator';
+
+                 if (email && data.status === 'active') {
+                    console.log(`🔄 Polar: Updating ${email} to ${plan} (Subscription Updated)`);
+                    await sql`
+                        UPDATE users 
+                        SET subscription_tier = ${plan}, 
+                            updated_at = ${new Date()}
+                        WHERE email = ${email}
+                    `;
+                    return res.status(200).json({ success: true, message: `Updated ${email} to ${plan}` });
+                 }
+            }
         }
 
         res.status(200).json({ status: 'ignored' });
