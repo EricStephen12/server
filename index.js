@@ -1351,7 +1351,7 @@ try {
 
       const [data] = await sql`
         UPDATE lounge_sessions 
-        SET messages = ${messages}, updated_at = ${new Date()}
+        SET messages = ${JSON.stringify(messages)}, updated_at = ${new Date()}
         WHERE id = ${sessionId} AND user_id = ${userId}
         RETURNING *
       `;
@@ -1368,7 +1368,7 @@ try {
       const cleanTitle = title || `Analysis: ${videoUrl ? videoUrl.substring(0, 30) : 'Video'}...`;
       const [data] = await sql`
         INSERT INTO lounge_sessions(user_id, title, video_url, dna, messages, created_at, updated_at)
-        VALUES(${userId}, ${cleanTitle}, ${videoUrl}, ${dna}, ${messages}, ${new Date()}, ${new Date()})
+        VALUES(${userId}, ${cleanTitle}, ${videoUrl}, ${JSON.stringify(dna)}, ${JSON.stringify(messages)}, ${new Date()}, ${new Date()})
         RETURNING *
       `;
       result = data;
