@@ -11,14 +11,14 @@ const adminOnly = async (req, res, next) => {
         const [user] = await sql`SELECT is_admin, email FROM users WHERE id = ${userId}`;
         
         if (!user || !user.is_admin) {
-            console.warn(`Admin access denied for user: ${userId}`);
+
             return res.status(403).json({ error: 'Forbidden: Admin access required' });
         }
 
         req.user = user; // Populate req.user for downstream use
         next();
     } catch (err) {
-        console.error('Admin check error:', err);
+
         res.status(500).json({ error: 'Internal server error during admin check' });
     }
 };

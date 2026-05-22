@@ -3,17 +3,14 @@ const router = express.Router();
 const { sql } = require('../db/index');
 const adminProtected = require('../middleware/adminProtected');
 
-// Apply unified admin protection 🛡️💎
+
 router.use(adminProtected);
 
-/**
- * GET /api/admin/stats
- * Global platform overview
- */
+
 router.get('/stats', async (req, res) => {
     try {
         const [userCount] = await sql`SELECT count(*) FROM users`;
-        // Use COALESCE to handle NULL sums and target the 'users' table 🚀
+
         const [scanCount] = await sql`SELECT sum(total_videos_analyzed) as total FROM users`;
         const planBreakdown = await sql`
             SELECT subscription_tier as plan_type, count(*) as count 
@@ -30,18 +27,15 @@ router.get('/stats', async (req, res) => {
             }))
         });
     } catch (err) {
-        console.error('Admin Stats Error:', err);
+
         res.status(500).json({ error: 'Failed to fetch admin stats' });
     }
 });
 
-/**
- * GET /api/admin/users
- * Detailed user list
- */
+
 router.get('/users', async (req, res) => {
     try {
-        // Simplified query to use only the 'users' table 💎
+
         const users = await sql`
             SELECT 
                 id, 
@@ -57,15 +51,12 @@ router.get('/users', async (req, res) => {
 
         res.json(users);
     } catch (err) {
-        console.error('Admin Users Error:', err);
+
         res.status(500).json({ error: 'Failed to fetch users' });
     }
 });
 
-/**
- * GET /api/admin/support
- * List all support tickets
- */
+
 router.get('/support', async (req, res) => {
     try {
         const tickets = await sql`
@@ -76,14 +67,12 @@ router.get('/support', async (req, res) => {
         `;
         res.json(tickets);
     } catch (err) {
-        console.error('Admin Support Error:', err);
+
         res.status(500).json({ error: 'Failed to fetch tickets' });
     }
 });
 
-/**
- * PATCH /api/admin/support/:id/resolve
- */
+
 router.patch('/support/:id/resolve', async (req, res) => {
     try {
         const { id } = req.params;
@@ -94,9 +83,7 @@ router.patch('/support/:id/resolve', async (req, res) => {
     }
 });
 
-/**
- * POST /api/admin/users/:id/update-tier
- */
+
 router.post('/users/:id/update-tier', async (req, res) => {
     try {
         const { id } = req.params;
@@ -108,9 +95,7 @@ router.post('/users/:id/update-tier', async (req, res) => {
     }
 });
 
-/**
- * POST /api/admin/users/:id/add-credits
- */
+
 router.post('/users/:id/add-credits', async (req, res) => {
     try {
         const { id } = req.params;

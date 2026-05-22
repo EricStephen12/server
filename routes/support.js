@@ -3,10 +3,7 @@ const router = express.Router();
 const { sql } = require('../db/index');
 
 
-/**
- * POST /api/support/submit
- * Public or User support submission
- */
+
 router.post('/submit', async (req, res) => {
     try {
         const { email, subject, message, userId } = req.body;
@@ -21,10 +18,10 @@ router.post('/submit', async (req, res) => {
             RETURNING *
         `;
 
-        console.log(`📩 New Support Ticket from ${email || userId || 'Anonymous'}: ${subject}`);
+
         res.json({ success: true, ticketId: ticket.id });
     } catch (err) {
-        console.error('Support Submission Error:', err);
+
         res.status(500).json({ error: 'Failed to submit ticket' });
     }
 });

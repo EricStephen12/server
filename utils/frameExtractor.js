@@ -19,24 +19,21 @@ function findSystemFfmpeg() {
 
 const systemFfmpeg = findSystemFfmpeg();
 
-// Set paths
+
 if (systemFfmpeg) {
     ffmpeg.setFfmpegPath(systemFfmpeg);
-    console.log('✅ System ffmpeg found and set as primary:', systemFfmpeg);
+
 } else if (ffmpegStatic) {
     ffmpeg.setFfmpegPath(ffmpegStatic);
-    console.log('✅ ffmpeg-static used as fallback:', ffmpegStatic);
+
 }
 
-// Set ffprobe path
+
 if (ffprobeInstaller?.path) {
     ffmpeg.setFfprobePath(ffprobeInstaller.path);
 }
 
-/**
- * Downloads a file from a URL using axios (handles redirects, large files).
- * Includes TikTok CDN headers to prevent 403 on actual downloads.
- */
+
 async function downloadDirect(url, destPath) {
     const response = await axios({
         method: 'get',
@@ -48,7 +45,7 @@ async function downloadDirect(url, destPath) {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Referer': 'https://www.tiktok.com/',
             'Origin': 'https://www.tiktok.com',
-            'Accept': 'video/mp4,video/*;q=0.9,*/*;q=0.8',
+            'Accept': 'video/mp4,video*;q=0.8',
             'Accept-Language': 'en-US,en;q=0.9',
         }
     });
@@ -66,7 +63,7 @@ async function downloadDirect(url, destPath) {
         response.data.on('error', reject);
     });
 
-    // Validate the file was actually saved
+
     const stat = fs.statSync(destPath);
     if (stat.size < 1000) {
         throw new Error(`Downloaded file is too small (${stat.size} bytes) — likely a failed CDN response.`);
@@ -74,15 +71,11 @@ async function downloadDirect(url, destPath) {
 }
 
 
-/**
- * Resolve a TikTok URL to a direct download link using tikwm.com API.
- * This is the same backend that SnapTik and similar tools use.
- * Works from any server (Render, Railway, etc.) — no IP blocking issues.
- */
-async function resolveTikTokUrl(url) {
-    console.log('⚡ Resolving TikTok video via tikwm API...');
 
-    // Extract clean URL (strip tracking params)
+async function resolveTikTokUrl(url) {
+
+
+
     const cleanUrl = url.split('?')[0];
 
     const response = await axios({
@@ -99,11 +92,11 @@ async function resolveTikTokUrl(url) {
     const data = response.data;
 
     if (data?.code === 0 && data?.data) {
-        // PREFER: Regular play URL (usually H.264, universally compatible)
-        // SECONDARY: HD play URL (often uses BVC2/HEVC, might fail)
+
+
         const videoUrl = data.data.play || data.data.hdplay || data.data.wmplay;
         if (videoUrl) {
-            console.log('✅ tikwm resolved video URL successfully (Preferred Standard MP4)');
+
             return videoUrl;
         }
     }
@@ -111,40 +104,38 @@ async function resolveTikTokUrl(url) {
     throw new Error('tikwm API failed to resolve TikTok video URL.');
 }
 
-/**
- * Download a video using yt-dlp if available (local dev only).
- */
+
 async function downloadWithYtDlp(url, destPath) {
     const { exec } = require('child_process');
     const { execSync } = require('child_process');
     let ytdlp = 'yt-dlp'; // Default to system command
 
     try {
-        // Test if yt-dlp is in path
+
         const version = execSync('yt-dlp --version', { encoding: 'utf-8' }).trim();
-        console.log(`✅ Using system yt-dlp version: ${version}`);
+
     } catch (e) {
-        // Fallback to local binary if not in path
+
         const localBin = path.join(__dirname, '../yt-dlp');
         const localBinExe = path.join(__dirname, '../yt-dlp.exe');
         if (fs.existsSync(localBin)) {
             ytdlp = `"${localBin}"`;
-            console.log('✅ Using local yt-dlp binary');
+
         } else if (fs.existsSync(localBinExe)) {
             ytdlp = `"${localBinExe}"`;
-            console.log('✅ Using local yt-dlp.exe');
+
         } else {
-            console.warn('⚠️ yt-dlp not found in PATH or locally. Attempting to proceed with "yt-dlp" command...');
+
         }
     }
 
-    console.log(`⚡ Downloading via yt-dlp: ${url}`);
+
     return new Promise((resolve, reject) => {
-        // Use best quality but limit to mp4
+
         const cmd = `${ytdlp} -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" --no-playlist --merge-output-format mp4 --no-check-certificate -o "${destPath}" "${url}"`;
         exec(cmd, { timeout: 120000 }, (error, stdout, stderr) => {
             if (error) {
-                console.error('❌ yt-dlp error output:', stderr);
+
                 reject(new Error(`yt-dlp failed: ${error.message}`));
             } else {
                 resolve();
@@ -154,12 +145,9 @@ async function downloadWithYtDlp(url, destPath) {
 }
 
 
-/**
- * Extract frames from a video URL at specific timestamps.
- * Supports TikTok URLs and direct mp4 URLs.
- */
+
 async function extractFrames(videoUrl, manualTimestamps = null) {
-    // Robust temp directory handling
+
     const tempDir = os.tmpdir();
     if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
 
@@ -167,13 +155,13 @@ async function extractFrames(videoUrl, manualTimestamps = null) {
     const videoPath = path.join(tempDir, `eixora_video_${videoId}.mp4`);
 
     try {
-        console.log(`🎥 Initiating Elite Extraction for: ${videoUrl}`);
 
-        // UNIVERSAL DOWNLOADER: Prioritize yt-dlp for all platforms (TikTok, Reels, Shorts)
+
+
         try {
             await downloadWithYtDlp(videoUrl, videoPath);
         } catch (ytdlpErr) {
-            console.warn('⚠️ yt-dlp failed, attempting direct/tikwm fallback...', ytdlpErr.message);
+
             
             const isTikTok = videoUrl.includes('tiktok.com');
             if (isTikTok) {
@@ -198,9 +186,9 @@ async function extractFrames(videoUrl, manualTimestamps = null) {
         }
 
         const stats = fs.statSync(videoPath);
-        console.log(`✅ DNA Downloaded: ${(stats.size / 1024 / 1024).toFixed(2)} MB`);
 
-        // Get metadata (duration)
+
+
         const getMetadata = (filePath) => new Promise((resolve, reject) => {
             ffmpeg.ffprobe(filePath, (err, metadata) => {
                 if (err) reject(err);
@@ -211,7 +199,7 @@ async function extractFrames(videoUrl, manualTimestamps = null) {
         const metadata = await getMetadata(videoPath);
         const duration = metadata.format.duration || 30;
 
-        // Dynamic sampling: stay inside 5-frame limit
+
         let timestamps = manualTimestamps;
         if (!timestamps) {
             timestamps = [
@@ -225,7 +213,7 @@ async function extractFrames(videoUrl, manualTimestamps = null) {
         }
 
         const frames = [];
-        console.log(`🧠 Deconstructing ${timestamps.length} Mastery Points across ${duration.toFixed(1)}s...`);
+
 
         for (const timestamp of timestamps) {
             const frameFilename = `frame_${videoId}_${timestamp}.jpg`;
@@ -233,28 +221,27 @@ async function extractFrames(videoUrl, manualTimestamps = null) {
 
             try {
                 await new Promise((resolve, reject) => {
-                    console.log(`🎬 Extracting frame at ${timestamp}s to ${framePath}...`);
+
                     ffmpeg(videoPath)
                         .seekInput(timestamp)
                         .frames(1)
                         .output(framePath)
-                        .on('start', (cmd) => console.log('🚀 Running ffmpeg:', cmd))
+                        .on('start', () => {})
                         .on('end', () => {
-                            console.log(`✅ Frame extracted at ${timestamp}s`);
                             resolve();
                         })
                         .on('error', (err, stdout, stderr) => {
-                            console.error(`❌ ffmpeg error at ${timestamp}s:`, err.message);
-                            console.error('STDOUT:', stdout);
-                            console.error('STDERR:', stderr);
-                            // Fallback to accurate seek
+
+
+
+
                             ffmpeg(videoPath)
                                 .seek(timestamp)
                                 .frames(1)
                                 .output(framePath)
                                 .on('end', resolve)
                                 .on('error', (err2, stdout2, stderr2) => {
-                                    console.error('❌ Accurate seek fallback also failed');
+
                                     reject(err2);
                                 })
                                 .run();
@@ -272,7 +259,7 @@ async function extractFrames(videoUrl, manualTimestamps = null) {
                     fs.unlinkSync(framePath);
                 }
             } catch (ffmpegErr) {
-                console.warn(`⚠️ Skipping frame at ${timestamp}s:`, ffmpegErr.message);
+
             }
         }
 
@@ -280,11 +267,11 @@ async function extractFrames(videoUrl, manualTimestamps = null) {
             throw new Error('Failed to extract any DNA samples.');
         }
 
-        console.log(`🎨 Extracted ${frames.length} DNA samples successfully`);
 
-        // Extract audio for transcription
+
+
         const audioPath = path.join(tempDir, `audio_${videoId}.mp3`);
-        console.log('🎵 Extracting Audio DNA...');
+
         await new Promise((resolve, reject) => {
             ffmpeg(videoPath)
                 .toFormat('mp3')
@@ -293,13 +280,13 @@ async function extractFrames(videoUrl, manualTimestamps = null) {
                 .save(audioPath);
         });
 
-        // Cleanup video
+
         if (fs.existsSync(videoPath)) fs.unlinkSync(videoPath);
 
         return { frames, audioPath };
 
     } catch (error) {
-        console.error('❌ Elite Extraction Pipeline Error:', error.message);
+
         if (fs.existsSync(videoPath)) fs.unlinkSync(videoPath);
         throw error;
     }

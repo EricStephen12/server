@@ -6,10 +6,10 @@ dotenv.config();
 const connectionString = process.env.DATABASE_URL?.trim();
 
 if (!connectionString) {
-    console.error('❌ DATABASE_URL is missing in server/.env');
+
 }
 
-// Neon serverless connection
+
 const sql = postgres(connectionString, {
     ssl: 'require',
     max: 10,
@@ -17,16 +17,14 @@ const sql = postgres(connectionString, {
     connect_timeout: 30,
 });
 
-/**
- * Helper to test the connection
- */
+
 async function testConnection() {
     try {
         const result = await sql`SELECT 1 as result`;
-        console.log('✅ Neon Database Connection Successful!');
+
         return true;
     } catch (error) {
-        console.error('❌ Neon Database Connection Failed:', error.message);
+
         return false;
     }
 }

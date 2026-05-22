@@ -1,9 +1,5 @@
 const { sql } = require('../db/index');
 
-/**
- * Resolves a Clerk User ID or external UUID to an internal PostgreSQL user ID.
- * Automatically creates or syncs the user record if they do not exist.
- */
 async function resolveInternalId(id, clerkInfo = null) {
   if (!id) return null;
   const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -26,7 +22,7 @@ async function resolveInternalId(id, clerkInfo = null) {
     `;
     return newUser.id;
   } catch (err) {
-    console.error('❌ Resolve User Error:', err.message);
+
     return null;
   }
 }

@@ -1,19 +1,14 @@
 const Groq = require('groq-sdk');
 
-/**
- * Analyze video frames using Groq Vision API (Llama 3.2 Multimodal)
- * @param {Array} frames - Array of frame objects with {timestamp, base64, mimeType}
- * @param {string} productContext - Context about the product being advertised
- * @returns {Promise<Object>} - Detailed visual analysis
- */
-async function analyzeVideoFrames(frames, productContext = '', transcript = '') {
+
+async function analyzeVideoFrames(frames, productContext = '', transcript = '', music = null) {
   if (!process.env.GROQ_API_KEY) {
     throw new Error('Groq API Key is missing for Vision Analysis');
   }
 
   const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
-  // Prepare contents for Groq Multimodal
+
   const messages = [
     {
       role: 'user',
@@ -23,6 +18,7 @@ async function analyzeVideoFrames(frames, productContext = '', transcript = '') 
           text: `You are an Elite Direct-Response Creative Director analyzing a TikTok ad. 
 ${productContext ? `Product Context: ${productContext}` : ''}
 ${transcript ? `SPOKEN TRANSCRIPT (AUDIO DNA): "${transcript}"` : 'No audio transcript detected.'}
+${music ? `BACKGROUND MUSIC (SHAZAM DATA): "${music}"` : ''}
 
 I'm providing you with ${frames.length} frames extracted across the video.
 
@@ -102,7 +98,7 @@ Output as JSON with this EXACT structure:
     return JSON.parse(responseText);
 
   } catch (error) {
-    console.error('Groq Vision analysis error:', error);
+
     throw new Error(`Video analysis failed: ${error.message}`);
   }
 }

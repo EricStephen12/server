@@ -2,14 +2,9 @@ const jwt = require('jsonwebtoken');
 const { sql } = require('../db/index');
 
 
-/**
- * Combined Admin Protection Middleware 💎🛡️
- * Checks for BOTH:
- * 1. Dedicated Admin JWT (Master Admin)
- * 2. Clerk Session with Admin Status (Database Profile check)
- */
+
 async function adminProtected(req, res, next) {
-    // 1. Prioritize Authorization Header (used for Master Admin) 💎🚀
+
     let sessionToken = req.headers.authorization ? req.headers.authorization.split(' ')[1] : null;
 
     if (!sessionToken) {
@@ -21,7 +16,7 @@ async function adminProtected(req, res, next) {
     }
 
     try {
-        // 2. CHECK FOR MASTER ADMIN JWT FIRST 🔓
+
         try {
             const decoded = jwt.verify(sessionToken, process.env.JWT_SECRET);
             if (decoded && decoded.role === 'master_admin') {
@@ -29,14 +24,14 @@ async function adminProtected(req, res, next) {
                 return next();
             }
         } catch (jwtErr) {
-            // Not a Master Admin JWT, proceed to Clerk check
+
         }
 
-        // 3. CHECK FOR ADMIN STATUS VIA DB (If userId provided) 🛡️
+
         const userId = req.body.userId || req.query.userId || req.headers['x-user-id'];
         
         if (userId) {
-            // Verify Admin status in database
+
             const [user] = await sql`SELECT id, is_admin, email, name FROM users WHERE id = ${userId}`;
 
             if (user && user.is_admin) {
@@ -44,14 +39,14 @@ async function adminProtected(req, res, next) {
                 return next();
             }
             
-            console.warn(`🚨 Admin access denied for unauthorized user ID: ${userId}`);
+
             return res.status(403).json({ error: 'Forbidden: Admin access only.' });
         }
 
         return res.status(401).json({ error: 'Unauthorized: No valid session or user ID provided.' });
 
     } catch (err) {
-        console.error('Admin Auth Error:', err);
+
         res.status(500).json({ error: 'Security Engine failure during authentication.' });
     }
 }

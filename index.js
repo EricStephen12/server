@@ -7,12 +7,13 @@ const multer = require('multer');
 const { extractFrames } = require('./utils/frameExtractor');
 const { analyzeVideoFrames } = require('./utils/visionAnalyzer');
 const { transcribeAudio } = require('./utils/audioTranscriber');
+const { identifyMusic } = require('./utils/musicRecognizer');
 const { sql, testConnection } = require('./db/index');
 const prisma = require('./db/prisma');
 const adminRouter = require('./routes/admin');
 const adminAuthRouter = require('./routes/adminAuth');
 const supportRouter = require('./routes/support');
-// const selarWebhooks = require('./routes/selar');
+
 const polarWebhooks = require('./routes/polar');
 const userRouter = require('./routes/user');
 const helmet = require('helmet');
@@ -20,14 +21,14 @@ const rateLimit = require('express-rate-limit');
 
 dotenv.config();
 
-// Global Crash Handlers
+
 process.on('unhandledRejection', (reason, promise) => {
-    console.error('❌ CRITICAL: Unhandled Rejection at:', promise, 'reason:', reason);
+
 });
 
 process.on('uncaughtException', (err) => {
-    console.error('❌ CRITICAL: Uncaught Exception:', err.message);
-    console.error(err.stack);
+
+
 });
 
 const app = express();
@@ -69,7 +70,7 @@ const globalLimiter = rateLimit({
 });
 app.use('/api/', globalLimiter);
 
-// app.use('/api/webhooks/selar', selarWebhooks);
+
 app.use('/api/webhooks/polar', polarWebhooks);
 
 app.use(express.json());
@@ -119,7 +120,7 @@ const [newUser] = await sql`
     `;
     return newUser.id;
   } catch (err) {
-    console.error('❌ Resolve User Error:', err.message);
+
     return null;
   }
 }
@@ -200,159 +201,11 @@ try {
   res.json({ status: 'debug_complete', report });
 });
 
-/* app.post('/api/auth/register', async (req, res) => {
-  const { email, password, name } = req.body;
-  const bcrypt = require('bcryptjs');
 
-  if (!email || !password) {
-    return res.status(400).json({ error: 'Email and password are required' });
-  }
 
-  try {
 
-    const [existing] = await sql`SELECT * FROM users WHERE email = ${email}`;
-    if (existing) {
-      return res.status(400).json({ error: 'User already exists' });
-    }
 
-const hashedPassword = await bcrypt.hash(password, 10);
 
-const [newUser] = await sql`
-      INSERT INTO users (email, password, name, created_at)
-      VALUES (${email}, ${hashedPassword}, ${name || null}, ${new Date()})
-      RETURNING id, email, name
-    `;
-
-    res.status(201).json({ message: 'User created successfully', user: newUser });
-  } catch (err) {
-    console.error('Registration error:', err);
-    res.status(500).json({ error: 'Failed to create user' });
-  }
-}); */
-
-/* app.get('/api/me', async (req, res) => {
-  let userId = req.query.userId;
-  const { email, name } = req.query;
-  userId = await resolveInternalId(userId, { email, name });
-  if (!userId) return res.status(404).json({ error: 'User not found' });
-
-  try {
-    
-    if (userId === '00000000-0000-0000-0000-000000000000') {
-      return res.json({
-        id: userId,
-        name: 'Elite Master Admin',
-        email: 'admin@eixora.ai',
-        plan_type: 'agency',
-        subscription_tier: 'agency',
-        is_admin: true,
-        is_master_admin: true,
-        credits_remaining: 999999,
-        monthly_usage: { scans: 0, scripts: 0 }
-      });
-    }
-
-    const [user] = await sql`
-      SELECT 
-        id, 
-        name, 
-        email, 
-        image, 
-        subscription_tier as "subscriptionTier", 
-        credits_remaining as "creditsRemaining", 
-        total_scripts as "totalScripts", 
-        total_pins as "totalPins", 
-        total_videos_analyzed as "totalVideosAnalyzed", 
-        onboarding_completed as "onboardingCompleted", 
-        brand_niche as "brandNiche", 
-        primary_goal as "primaryGoal", 
-        created_at as "createdAt"
-      FROM users 
-      WHERE id = ${userId}
-    `;
-
-    if (!user) return res.status(404).json({ error: 'User not found' });
-
-const oneMonthAgo = new Date();
-    oneMonthAgo.setDate(oneMonthAgo.getDate() - 30);
-
-    const [{ scanCount }] = await sql`
-      SELECT count(*)::int as "scanCount" FROM lounge_sessions 
-      WHERE user_id = ${userId} AND updated_at > ${oneMonthAgo}
-    `;
-
-    const [{ scriptCount }] = await sql`
-      SELECT count(*)::int as "scriptCount" FROM scripts 
-      WHERE user_id = ${userId} AND created_at > ${oneMonthAgo}
-    `;
-
-res.json({
-      ...user,
-      plan_type: user.subscriptionTier,
-      subscription_tier: user.subscriptionTier,
-      credits_remaining: user.creditsRemaining,
-      total_scripts: user.totalScripts,
-      total_pins: user.totalPins,
-      total_videos_analyzed: user.totalVideosAnalyzed,
-      onboarding_completed: user.onboardingCompleted,
-      brand_niche: user.brandNiche,
-      primary_goal: user.primaryGoal,
-      created_at: user.createdAt,
-      monthly_usage: {
-        scans: scanCount,
-        scripts: scriptCount
-      }
-    });
-  } catch (err) {
-    console.error('Fetch profile error:', err);
-    res.status(500).json({ error: 'Failed to fetch profile' });
-  }
-}); */
-
-/* app.patch('/api/me', async (req, res) => {
-  let { userId, name, onboarding_completed, brand_niche, primary_goal } = req.body;
-  if (!userId) return res.status(400).json({ error: 'User ID required' });
-
-  userId = await resolveInternalId(userId);
-  if (!userId) return res.status(404).json({ error: 'User resolution failed' });
-
-  try {
-    const updatedUser = await prisma.user.update({
-      where: { id: userId },
-      data: {
-        name: name !== undefined ? name : undefined,
-        onboardingCompleted: onboarding_completed !== undefined ? onboarding_completed : undefined,
-        brandNiche: brand_niche !== undefined ? brand_niche : undefined,
-        primaryGoal: primary_goal !== undefined ? primary_goal : undefined,
-      },
-      select: {
-        id: true,
-        name: true,
-        email: true,
-        image: true,
-        subscriptionTier: true,
-        creditsRemaining: true,
-        totalScripts: true,
-        totalPins: true,
-        onboardingCompleted: true,
-        brandNiche: true,
-        primaryGoal: true
-      }
-    });
-
-    res.json({
-      ...updatedUser,
-      plan_type: updatedUser.subscriptionTier,
-      subscription_tier: updatedUser.subscriptionTier,
-      onboarding_completed: updatedUser.onboardingCompleted,
-      brand_niche: updatedUser.brandNiche,
-      primary_goal: updatedUser.primaryGoal
-    });
-  } catch (err) {
-    console.error('Update profile error:', err);
-    res.status(500).json({ error: 'Failed to update profile' });
-  }
-}); */
 
 app.get('/api/test-tiktok', async (req, res) => {
   const videoUrl = req.query.url;
@@ -439,7 +292,7 @@ await sql`UPDATE users SET total_pins = total_pins + 1 WHERE id = ${userId}`;
 
     res.json({ success: true, ad: data });
   } catch (error) {
-    console.error('Save to vault error:', error);
+
     res.status(500).json({ error: 'Failed to save to vault' });
   }
 });
@@ -481,7 +334,7 @@ app.get('/api/user-ads', async (req, res) => {
 
     res.json(formattedAds);
   } catch (error) {
-    console.error('Error fetching user ads:', error);
+
     res.status(500).json({ error: 'Failed to fetch user ads' });
   }
 });
@@ -524,7 +377,7 @@ async function checkLimits(inputUserId, type) {
 
     return { allowed: true };
   } catch (err) {
-    console.error('Limit check error:', err);
+
     return { allowed: true }; // Allow on error to avoid blocking users
   }
 }
@@ -569,16 +422,21 @@ const results = [];
       }
 
       let transcript = "";
+      let music = null;
       if (audioPath) {
+        try {
+          music = await identifyMusic(audioPath);
+        } catch(e) {  }
+        
         try {
           transcript = await transcribeAudio(audioPath);
         } catch (err) {
-
         }
       }
 
-      const analysis = await analyzeVideoFrames(frames, `Analysis of: ${url}`, transcript);
+      const analysis = await analyzeVideoFrames(frames, `Analysis of: ${url}`, transcript, music);
       analysis.transcript = transcript;
+      analysis.music = music;
 
 try {
         await sql`UPDATE users SET total_videos_analyzed = total_videos_analyzed + 1 WHERE id = ${userId}`;
@@ -594,7 +452,7 @@ return {
         hasAudio: !!transcript
       };
     } catch (error) {
-      console.error(`❌ [${index + 1}/${urls.length}] Failed: ${url}:`, error.message);
+
       return { url, success: false, error: error.message };
     }
   };
@@ -676,57 +534,12 @@ const [user] = await sql`SELECT subscription_tier FROM users WHERE id = ${userId
     res.setHeader('Content-Disposition', `attachment; filename="eixora-dna-report-${Date.now()}.txt"`);
     res.send(report);
   } catch (err) {
-    console.error('Export report error:', err);
+
     res.status(500).json({ error: 'Failed to generate report' });
   }
 });
 
-/* app.get('/api/plan-check', async (req, res) => {
-  let userId = req.query.userId;
-  if (!userId) return res.status(400).json({ error: 'User ID required' });
 
-  userId = await resolveInternalId(userId);
-  if (!userId) return res.status(404).json({ error: 'User not found' });
-
-  try {
-    const [user] = await sql`SELECT subscription_tier, subscription_status FROM users WHERE id = ${userId}`;
-    if (!user) return res.status(404).json({ error: 'User not found' });
-
-    const tier = user.subscription_tier || 'free';
-    const limits = {
-      free: { scans_per_month: 3, scripts_per_month: 3, batch: false, export: false, team: false },
-      creator: { scans_per_month: 30, scripts_per_month: 30, batch: false, export: false, team: false },
-      studio: { scans_per_month: 250, scripts_per_month: 250, batch: true, export: true, team: true },
-      agency: { scans_per_month: 250, scripts_per_month: 250, batch: true, export: true, team: true },
-    };
-
-const oneMonthAgo = new Date();
-    oneMonthAgo.setDate(oneMonthAgo.getDate() - 30);
-
-    const [{ scanCount }] = await sql`
-      SELECT count(*)::int as "scanCount" FROM lounge_sessions 
-      WHERE user_id = ${userId} AND updated_at > ${oneMonthAgo}
-    `;
-
-    const [{ scriptCount }] = await sql`
-      SELECT count(*)::int as "scriptCount" FROM scripts 
-      WHERE user_id = ${userId} AND created_at > ${oneMonthAgo}
-    `;
-
-    res.json({
-      tier,
-      status: user.subscription_status || 'inactive',
-      limits: limits[tier] || limits.free,
-      usage: {
-        scans: scanCount,
-        scripts: scriptCount
-      }
-    });
-  } catch (err) {
-    console.error('Plan check error:', err);
-    res.status(500).json({ error: 'Plan check failed' });
-  }
-}); */
 
 app.post('/api/analyze-video', upload.single('video'), async (req, res) => {
   let userId = req.body.userId;
@@ -755,8 +568,10 @@ if (userId) {
     }
 
 let transcript = "";
+let music = null;
     if (audioPath) {
       try {
+        music = await identifyMusic(audioPath);
         transcript = await transcribeAudio(audioPath);
 
       } catch (err) {
@@ -764,7 +579,7 @@ let transcript = "";
       }
     }
 
-const analysis = await analyzeVideoFrames(frames, 'Uploaded Draft Analysis', transcript);
+const analysis = await analyzeVideoFrames(frames, 'Uploaded Draft Analysis', transcript, music);
 
 if (userId) {
       try {
@@ -782,7 +597,7 @@ if (userId) {
     });
 
   } catch (error) {
-    console.error('Video analysis error:', error);
+
     res.status(500).json({
       error: 'Video audit failed',
       details: error.message
@@ -848,7 +663,7 @@ if (userId) {
     });
 
   } catch (error) {
-    console.error('Video URL analysis error:', error);
+
     res.status(500).json({
       error: 'URL Video audit failed',
       details: error.message
@@ -980,7 +795,7 @@ contextPrompt = `
             Your script must be SPECIFIC and ACTIONABLE - the user should know exactly what to film.
             `;
           } catch (visionError) {
-            console.error('Video analysis failed, falling back to text analysis:', visionError.message);
+
 
             if (adData.analysis) {
               contextPrompt = `
@@ -1085,7 +900,7 @@ if (sql && userId) {
           VALUES (${userId}, ${productName}, ${description}, ${JSON.stringify(scriptContent)}, ${new Date()})
         `;
       } catch (dbErr) {
-        console.error('Failed to save to DB:', dbErr);
+
       }
     }
 
@@ -1097,14 +912,14 @@ if (sql && userId) {
           WHERE id = ${userId}
         `;
       } catch (statErr) {
-        console.error('Failed to increment scripts stat:', statErr);
+
       }
     }
 
     res.json(fullGuide);
 
   } catch (error) {
-    console.error('Groq Error:', error);
+
     res.status(500).json({ error: 'Failed to generate script', details: error.message });
   }
 });
@@ -1163,7 +978,7 @@ app.get('/api/ads', async (req, res) => {
 
     res.json(formattedAds);
   } catch (error) {
-    console.error('Error fetching ads:', error);
+
     res.status(500).json({ error: 'Failed to fetch ads' });
   }
 });
@@ -1239,7 +1054,7 @@ if (adData.analysis && adData.analysis.hook) {
 
     res.json(JSON.parse(completion.choices[0]?.message?.content || '{"questions": [], "analysis_logs": []}'));
   } catch (error) {
-    console.error('Questions error:', error);
+
     res.status(500).json({ error: 'Failed' });
   }
 });
@@ -1331,7 +1146,7 @@ app.post('/api/creative-director-chat', async (req, res) => {
 
     res.json({ message: completion.choices[0]?.message?.content });
   } catch (error) {
-    console.error('Chat error:', error);
+
     res.status(500).json({ error: 'Failed' });
   }
 });
@@ -1376,7 +1191,7 @@ try {
     }
     res.json(result);
   } catch (error) {
-    console.error('❌ Save session error:', error);
+
     res.status(500).json({ error: 'Failed to save session' });
   }
 });
@@ -1414,7 +1229,7 @@ const formattedSessions = sessions.map(s => ({
 
 res.json(formattedSessions);
   } catch (error) {
-    console.error('❌ Fetch sessions error:', error);
+
     res.status(500).json({ error: 'Failed' });
   }
 });
@@ -1427,7 +1242,7 @@ app.get('/api/lounge-session/:id', async (req, res) => {
     if (!session) return res.status(404).json({ error: 'Session not found' });
     res.json(session);
   } catch (error) {
-    console.error('Fetch session error:', error);
+
     res.status(500).json({ error: 'Failed to fetch session' });
   }
 });
@@ -1438,7 +1253,7 @@ app.delete('/api/lounge-session/:id', async (req, res) => {
     await sql`DELETE FROM lounge_sessions WHERE id = ${sessionId}`;
     res.json({ success: true, message: 'Session deleted successfully' });
   } catch (error) {
-    console.error('Delete session error:', error);
+
     res.status(500).json({ error: 'Failed to delete session' });
   }
 });
@@ -1508,7 +1323,7 @@ await sql`
 
     res.json(script);
   } catch (error) {
-    console.error('Script generation error:', error);
+
     res.status(500).json({ error: 'Failed' });
   }
 });
@@ -1549,7 +1364,7 @@ const [existingUser] = await sql`SELECT id FROM users WHERE email = ${email}`;
 
     res.json({ success: true, message: `Invite sent to ${email}` });
   } catch (err) {
-    console.error('Invite team error:', err);
+
     res.status(500).json({ error: 'Failed to invite team member' });
   }
 });
@@ -1565,7 +1380,7 @@ app.get('/api/team/list', async (req, res) => {
     const members = await sql`SELECT * FROM team_members WHERE owner_id = ${ownerId} ORDER BY created_at DESC`;
     res.json({ members });
   } catch (err) {
-    console.error('List team error:', err);
+
     res.status(500).json({ error: 'Failed to list team' });
   }
 });
@@ -1590,7 +1405,7 @@ if (member.member_user_id) {
 res.json({ success: true });
 
   } catch (error) {
-    console.error('Remove team member error:', error);
+
     res.status(500).json({ error: 'Failed to remove team member' });
   }
 });
@@ -1655,7 +1470,7 @@ await sql`
 return res.status(200).json({ status: 'success', tier: subscriptionTier });
 
   } catch (err) {
-    console.error('Gumroad Webhook Error:', err);
+
     return res.status(200).json({ status: 'error', message: err.message });
   }
 });
@@ -1704,6 +1519,6 @@ await sql`
 
     }
   } catch (err) {
-    console.error('❌ Startup Database connection failed:', err.message);
+
   }
 });

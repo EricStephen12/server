@@ -6,10 +6,6 @@ const { resolveInternalId } = require('../utils/userResolver');
 
 const router = express.Router();
 
-/**
- * @route POST /api/auth/register
- * @desc Registers a new user with email and password
- */
 router.post('/auth/register', async (req, res) => {
   const { email, password, name } = req.body;
 
@@ -33,15 +29,11 @@ router.post('/auth/register', async (req, res) => {
 
     res.status(201).json({ message: 'User created successfully', user: newUser });
   } catch (err) {
-    console.error('Registration error:', err);
+
     res.status(500).json({ error: 'Failed to create user' });
   }
 });
 
-/**
- * @route GET /api/me
- * @desc Fetches the current user profile, usage stats, and subscription tier
- */
 router.get('/me', async (req, res) => {
   let userId = req.query.userId;
   const { email, name } = req.query;
@@ -115,15 +107,11 @@ router.get('/me', async (req, res) => {
       }
     });
   } catch (err) {
-    console.error('Fetch profile error:', err);
+
     res.status(500).json({ error: 'Failed to fetch profile' });
   }
 });
 
-/**
- * @route PATCH /api/me
- * @desc Updates user profile onboarding fields
- */
 router.patch('/me', async (req, res) => {
   let { userId, name, onboarding_completed, brand_niche, primary_goal } = req.body;
   if (!userId) return res.status(400).json({ error: 'User ID required' });
@@ -164,15 +152,11 @@ router.patch('/me', async (req, res) => {
       primary_goal: updatedUser.primaryGoal
     });
   } catch (err) {
-    console.error('Update profile error:', err);
+
     res.status(500).json({ error: 'Failed to update profile' });
   }
 });
 
-/**
- * @route GET /api/plan-check
- * @desc Checks user subscription tier, limits, and active monthly usage
- */
 router.get('/plan-check', async (req, res) => {
   let userId = req.query.userId;
   if (!userId) return res.status(400).json({ error: 'User ID required' });
@@ -215,7 +199,7 @@ router.get('/plan-check', async (req, res) => {
       }
     });
   } catch (err) {
-    console.error('Plan check error:', err);
+
     res.status(500).json({ error: 'Plan check failed' });
   }
 });
