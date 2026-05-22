@@ -1,3 +1,4 @@
+require('dotenv').config();
 const { extractFrames } = require('./utils/frameExtractor');
 
 async function test() {
@@ -5,12 +6,9 @@ async function test() {
     try {
         console.log('Testing extraction for:', url);
         const result = await extractFrames(url);
-        console.log('Success!');
-        console.log('Frames extracted:', result.frames.length);
-        console.log('Audio path:', result.audioPath);
+        console.log('Success! Extracted frames:', result.frames.length);
     } catch (err) {
         console.error('Extraction failed:', err.message);
     }
 }
-
 test();

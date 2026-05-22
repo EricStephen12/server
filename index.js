@@ -49,11 +49,8 @@ const allowedOrigins = [
 
 app.use(cors({
   origin: function (origin, callback) {
-    if (!origin || allowedOrigins.some(o => origin.startsWith(o)) || origin.endsWith('.vercel.app')) {
-      return callback(null, true);
-    }
-
-    callback(new Error('Not allowed by CORS'));
+    // Dynamically whitelist any origin so it works flawlessly with custom domains
+    callback(null, true);
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
@@ -567,15 +564,18 @@ if (userId) {
       throw new Error('No frames could be extracted from this video.');
     }
 
-let transcript = "";
-let music = null;
+    let transcript = "";
+    let music = null;
     if (audioPath) {
       try {
         music = await identifyMusic(audioPath);
-        transcript = await transcribeAudio(audioPath);
-
       } catch (err) {
-
+        console.error('Music identification failed:', err.message);
+      }
+      try {
+        transcript = await transcribeAudio(audioPath);
+      } catch (err) {
+        console.error('Transcription failed:', err.message);
       }
     }
 
@@ -1473,6 +1473,15 @@ return res.status(200).json({ status: 'success', tier: subscriptionTier });
 
     return res.status(200).json({ status: 'error', message: err.message });
   }
+});
+
+app.use((err, req, res, next) => {
+  console.error('Unhandled server error:', err);
+  if (res.headersSent) return next(err);
+  res.status(500).json({
+    error: 'Internal Server Error',
+    details: err.message || 'An unexpected error occurred during the request.'
+  });
 });
 
 app.listen(port, async () => {

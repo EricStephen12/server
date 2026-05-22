@@ -6,7 +6,7 @@ async function analyzeVideoFrames(frames, productContext = '', transcript = '', 
     throw new Error('Groq API Key is missing for Vision Analysis');
   }
 
-  const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+  const groq = new Groq({ apiKey: process.env.GROQ_API_KEY, timeout: 20000 });
 
 
   const messages = [

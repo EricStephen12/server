@@ -7,7 +7,7 @@ async function transcribeAudio(audioPath) {
         throw new Error('Groq API Key is missing for Audio Transcription');
     }
 
-    const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+    const groq = new Groq({ apiKey: process.env.GROQ_API_KEY, timeout: 15000 });
     const MAX_RETRIES = 3;
 
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
@@ -25,8 +25,9 @@ async function transcribeAudio(audioPath) {
             return transcription.text;
 
         } catch (error) {
-            const isNetworkError = ['ETIMEDOUT', 'ECONNRESET', 'ENOTFOUND'].includes(error.cause?.code);
-
+            const isNetworkError = error.name === 'APIConnectionTimeoutError' || 
+                                   ['ETIMEDOUT', 'ECONNRESET', 'ENOTFOUND'].includes(error.cause?.code) ||
+                                   error.status >= 500;
 
             if (attempt < MAX_RETRIES && isNetworkError) {
 

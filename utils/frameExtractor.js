@@ -150,37 +150,37 @@ async function extractFrames(videoUrl, manualTimestamps = null) {
     if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
 
     const videoId = Date.now();
-    const videoPath = path.join(tempDir, `eixora_video_${videoId}.mp4`);
+    let videoPath = path.join(tempDir, `eixora_video_${videoId}.mp4`);
+    let isLocalFile = false;
 
     try {
-
-
-
-        try {
-            await downloadWithYtDlp(videoUrl, videoPath);
-        } catch (ytdlpErr) {
-
-            
-            const isTikTok = videoUrl.includes('tiktok.com');
-            if (isTikTok) {
-                try {
-                    const directUrl = await resolveTikTokUrl(videoUrl);
-                    await downloadDirect(directUrl, videoPath);
-                } catch (tikErr) {
-                    throw new Error(`Universal download failed: ${ytdlpErr.message} && ${tikErr.message}`);
-                }
-            } else {
-                try {
-                    await downloadDirect(videoUrl, videoPath);
-                } catch (dirErr) {
-                    throw new Error(`Universal download failed: ${ytdlpErr.message} && ${dirErr.message}`);
+        if (fs.existsSync(videoUrl)) {
+            videoPath = videoUrl;
+            isLocalFile = true;
+        } else {
+            try {
+                await downloadWithYtDlp(videoUrl, videoPath);
+            } catch (ytdlpErr) {
+                const isTikTok = videoUrl.includes('tiktok.com');
+                if (isTikTok) {
+                    try {
+                        const directUrl = await resolveTikTokUrl(videoUrl);
+                        await downloadDirect(directUrl, videoPath);
+                    } catch (tikErr) {
+                        throw new Error(`Universal download failed: ${ytdlpErr.message} && ${tikErr.message}`);
+                    }
+                } else {
+                    try {
+                        await downloadDirect(videoUrl, videoPath);
+                    } catch (dirErr) {
+                        throw new Error(`Universal download failed: ${ytdlpErr.message} && ${dirErr.message}`);
+                    }
                 }
             }
         }
 
-
         if (!fs.existsSync(videoPath)) {
-            throw new Error('Video download failed — file not created.');
+            throw new Error('Video processing failed — file not found.');
         }
 
         const stats = fs.statSync(videoPath);
