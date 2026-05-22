@@ -636,7 +636,13 @@ if (userId) {
     }
 
 let transcript = "";
+let music = null;
     if (audioPath) {
+      try {
+        music = await identifyMusic(audioPath);
+      } catch (err) {
+        console.error('Music identification failed:', err.message);
+      }
       try {
         transcript = await transcribeAudio(audioPath);
 
@@ -645,7 +651,7 @@ let transcript = "";
       }
     }
 
-const analysis = await analyzeVideoFrames(frames, 'URL Analysis', transcript);
+const analysis = await analyzeVideoFrames(frames, 'URL Analysis', transcript, music);
 
 if (userId) {
       try {
