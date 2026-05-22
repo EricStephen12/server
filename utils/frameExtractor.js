@@ -111,21 +111,19 @@ async function downloadWithYtDlp(url, destPath) {
     let ytdlp = 'yt-dlp'; // Default to system command
 
     try {
-
         const version = execSync('yt-dlp --version', { encoding: 'utf-8' }).trim();
-
     } catch (e) {
-
-        const localBin = path.join(__dirname, '../yt-dlp');
-        const localBinExe = path.join(__dirname, '../yt-dlp.exe');
-        if (fs.existsSync(localBin)) {
-            ytdlp = `"${localBin}"`;
-
-        } else if (fs.existsSync(localBinExe)) {
-            ytdlp = `"${localBinExe}"`;
-
-        } else {
-
+        try {
+            execSync('python -m yt_dlp --version', { encoding: 'utf-8' });
+            ytdlp = 'python -m yt_dlp';
+        } catch (e2) {
+            const localBin = path.join(__dirname, '../yt-dlp');
+            const localBinExe = path.join(__dirname, '../yt-dlp.exe');
+            if (fs.existsSync(localBin)) {
+                ytdlp = `"${localBin}"`;
+            } else if (fs.existsSync(localBinExe)) {
+                ytdlp = `"${localBinExe}"`;
+            }
         }
     }
 
