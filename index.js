@@ -584,10 +584,21 @@ const analysis = await analyzeVideoFrames(frames, 'Uploaded Draft Analysis', tra
 if (userId) {
       try {
         await sql`UPDATE users SET total_videos_analyzed = total_videos_analyzed + 1 WHERE id = ${userId}`;
-      } catch (err) {
-
-      }
+      } catch (err) {}
     }
+
+    // Auto-save to benchmark database
+    try {
+      await sql`
+        INSERT INTO ad_benchmarks (user_id, niche, hook_power, retention_score, conversion_trigger, 
+          awareness_level, style, primary_trigger, transcript_length)
+        VALUES (${userId || null}, ${analysis.niche || 'General'}, 
+          ${analysis.metrics?.hook_power || 0}, ${analysis.metrics?.retention_score || 0},
+          ${analysis.metrics?.conversion_trigger || 0}, ${analysis.awareness_level || null},
+          ${analysis.vibe_assessment?.style || null}, ${analysis.psychology_breakdown?.primary_trigger || null},
+          ${transcript?.length || 0})
+      `;
+    } catch (e) { /* silent benchmark save */ }
 
     res.json({
       success: true,
@@ -656,10 +667,21 @@ const analysis = await analyzeVideoFrames(frames, 'URL Analysis', transcript, mu
 if (userId) {
       try {
         await sql`UPDATE users SET total_videos_analyzed = total_videos_analyzed + 1 WHERE id = ${userId}`;
-      } catch (err) {
-
-      }
+      } catch (err) {}
     }
+
+    // Auto-save to benchmark database
+    try {
+      await sql`
+        INSERT INTO ad_benchmarks (user_id, video_url, niche, hook_power, retention_score, conversion_trigger, 
+          awareness_level, style, primary_trigger, transcript_length)
+        VALUES (${userId || null}, ${req.body.videoUrl || null}, ${analysis.niche || 'General'}, 
+          ${analysis.metrics?.hook_power || 0}, ${analysis.metrics?.retention_score || 0},
+          ${analysis.metrics?.conversion_trigger || 0}, ${analysis.awareness_level || null},
+          ${analysis.vibe_assessment?.style || null}, ${analysis.psychology_breakdown?.primary_trigger || null},
+          ${transcript?.length || 0})
+      `;
+    } catch (e) { /* silent benchmark save */ }
 
     res.json({
       success: true,
@@ -674,6 +696,27 @@ if (userId) {
       error: 'URL Video audit failed',
       details: error.message
     });
+  }
+});
+
+// Benchmark API — returns niche-level comparative data
+app.get('/api/niche-benchmarks', async (req, res) => {
+  const { niche } = req.query;
+  if (!niche) return res.json({ total_ads: 0 });
+
+  try {
+    const [benchmarks] = await sql`
+      SELECT 
+        COUNT(*)::int as total_ads,
+        ROUND(AVG(hook_power), 1) as avg_hook,
+        ROUND(AVG(retention_score), 1) as avg_retention,
+        ROUND(AVG(conversion_trigger), 1) as avg_conversion
+      FROM ad_benchmarks
+      WHERE niche ILIKE ${'%' + niche + '%'}
+    `;
+    res.json(benchmarks || { total_ads: 0 });
+  } catch (e) {
+    res.json({ total_ads: 0 });
   }
 });
 
@@ -863,31 +906,50 @@ contextPrompt = `
         - **Visual Pacing**: Use the exact same storytelling arc (e.g. 2s Hook -> 5s Problem -> 10s Solution).
         - **Creative Parity**: The goal is to make a new ad that feels like it was made by the same Artistic Director as the original.
 
-        Generate an Agency-Grade Viral Production Guide.
+        Generate an Agency-Grade Viral Production Guide that a creator can FILM FROM TODAY.
+        Every instruction must be specific enough to hand to a videographer with zero context.
+
         Output JSON only: { 
             "summary": {
-                "hook": "...", 
-                "problem": "...", 
-                "solution": "...", 
-                "cta": "..."
+                "hook": "Exact words + visual for first 2 seconds", 
+                "problem": "How to visually show the pain point in 3-5 seconds", 
+                "solution": "How to demo the product as the answer", 
+                "cta": "The exact closing words + on-screen text"
             },
             "shot_list": [
                 { 
-                    "time": "...", 
-                    "shot": "...", 
-                    "visual": "Direct instructions to replicate the exact movement/lighting/energy of the source ad's corresponding scene.", 
-                    "audio": "...", 
-                    "text_overlay": "..." 
+                    "time": "0:00 - 0:02", 
+                    "duration_seconds": 2,
+                    "shot_type": "CLOSE-UP | WIDE | MEDIUM | POV | SCREEN-RECORD",
+                    "subject": "Exactly what is in frame — hands, face, product, environment",
+                    "camera": "Handheld/Tripod, angle, movement direction",
+                    "audio": "Exact script line to say OR 'no dialogue — music only'",
+                    "text_overlay": "Exact text to put on screen, font style, position",
+                    "energy": "Low | Building | Peak | Cool-down",
+                    "reference": "Which element from the source ad this mimics and why"
                 }
             ],
+            "music_direction": {
+                "vibe": "Describe the exact mood — e.g. 'Lo-fi with subtle bass buildup'",
+                "bpm_range": "90-110",
+                "search_tip": "What to search on TikTok/CapCut to find similar sounds",
+                "drop_timing": "When the music should peak — e.g. 'at the product reveal (0:08)'"
+            },
+            "thumbnail_direction": {
+                "description": "What the thumbnail/cover image should show",
+                "text": "What text to overlay on the thumbnail",
+                "why": "Why this thumbnail will get clicks"
+            },
             "aesthetic_guide": {
-                "lighting": "Mimic source ad cinematography",
-                "music_vibe": "Mimic source ad emotional frequency",
-                "color_palette": "Mimic source ad visual mood"
+                "lighting": "Specific lighting setup — e.g. 'Ring light from 45° left, warm tone'",
+                "color_palette": "Exact mood — e.g. 'Warm earth tones, slightly desaturated'",
+                "editing_pace": "Cut frequency — e.g. 'New shot every 1.5-2s during hook, slow to 3-4s in solution'",
+                "props_needed": "List of physical items needed for the shoot"
             }
         }
 
-        IMPORTANT: Replicate the EXACT visual pacing and transition style of the winning ad "${adId}". Preserve the SOUL of the creative while changing the product.
+        CRITICAL: The shot_list must have at least 5 entries covering the full video duration.
+        Each entry must be specific enough that someone who has NEVER seen the original ad could film it perfectly.
     `;
 
     const completion = await groq.chat.completions.create({
@@ -1093,12 +1155,15 @@ app.post('/api/creative-director-chat', async (req, res) => {
     - **Niche**: ${dna.niche || 'General'}
     - **The Big Idea**: "${dna.big_idea || 'Not identified'}"
     - **The Secret Sauce**: "${dna.the_secret_sauce || 'Not identified'}"
-    - **Visual Hook**: ${dna.hook_analysis?.critique || 'No visual hook data'}
+    - **Hook Verdict**: ${dna.hook_verdict?.what_stops_the_scroll || dna.hook_analysis?.critique || 'No hook data'}
+    - **Fatal Flaw**: ${dna.fatal_flaw || 'None identified'}
+    - **Steal-Worthy Element**: ${dna.steal_worthy || 'None identified'}
+    - **Retention Map**: ${dna.retention_map?.critique || dna.pacing_analysis?.critique || 'Standard pacing'}
     - **Full Transcript**: "${dna.transcript || 'No transcript data'}"
-    - **Pacing**: ${dna.pacing_analysis?.critique || 'Standard pacing'}
+    - **Psychology Trigger**: ${dna.psychology_breakdown?.primary_trigger || 'Not identified'} — ${dna.psychology_breakdown?.explanation || ''}
     
     PERFORMANCE SCORES:
-    - **Hook**: ${dna.metrics?.hook_power || 'N/A'}/10
+    - **Hook**: ${dna.metrics?.hook_power || 'N/A'}/10 (Visual: ${dna.hook_verdict?.visual_hook_grade || 'N/A'}, Audio: ${dna.hook_verdict?.spoken_hook_grade || 'N/A'})
     - **Retention**: ${dna.metrics?.retention_score || 'N/A'}/10
     - **CTA**: ${dna.metrics?.conversion_trigger || 'N/A'}/10
 
@@ -1152,8 +1217,8 @@ app.post('/api/creative-director-chat', async (req, res) => {
 
     res.json({ message: completion.choices[0]?.message?.content });
   } catch (error) {
-
-    res.status(500).json({ error: 'Failed' });
+    console.error('Creative Director Chat Error:', error.message);
+    res.status(500).json({ error: 'Creative Director is temporarily unavailable. Please try again.', details: error.message });
   }
 });
 
@@ -1195,9 +1260,16 @@ try {
       result = data;
 
     }
+    if (result) {
+      if (typeof result.dna === 'string') {
+        try { result.dna = JSON.parse(result.dna); } catch(e){}
+      }
+      if (typeof result.messages === 'string') {
+        try { result.messages = JSON.parse(result.messages); } catch(e){}
+      }
+    }
     res.json(result);
   } catch (error) {
-
     res.status(500).json({ error: 'Failed to save session' });
   }
 });
@@ -1246,9 +1318,17 @@ app.get('/api/lounge-session/:id', async (req, res) => {
     const [session] = await sql`SELECT * FROM lounge_sessions WHERE id = ${sessionId}`;
 
     if (!session) return res.status(404).json({ error: 'Session not found' });
+
+    if (session) {
+      if (typeof session.dna === 'string') {
+        try { session.dna = JSON.parse(session.dna); } catch(e){}
+      }
+      if (typeof session.messages === 'string') {
+        try { session.messages = JSON.parse(session.messages); } catch(e){}
+      }
+    }
     res.json(session);
   } catch (error) {
-
     res.status(500).json({ error: 'Failed to fetch session' });
   }
 });
@@ -1278,9 +1358,12 @@ app.post('/api/generate-final-script', async (req, res) => {
     const finalPrompt = `AS THE ELITE CREATIVE DIRECTOR, SYNTHESIZE THIS MASTERMIND SESSION INTO A PRODUCTION GUIDE.
     
     ORIGINAL DNA:
-  - Awareness Level: ${dna.awareness_level}
-- Big Idea: ${dna.big_idea}
-- Critique Hook: ${dna.hook_analysis.critique}
+  - Awareness Level: ${dna.awareness_level || dna.niche || 'General'}
+- Big Idea: ${dna.big_idea || 'Not identified'}
+- Hook Verdict: ${dna.hook_verdict?.what_stops_the_scroll || dna.hook_analysis?.critique || 'No hook data'}
+- Fatal Flaw: ${dna.fatal_flaw || 'None identified'}
+- Steal-Worthy: ${dna.steal_worthy || 'None identified'}
+- Secret Sauce: ${dna.the_secret_sauce || 'Not identified'}
     
     CHAT CONTEXT(THE USER PREFERENCES):
   ${messages.map(m => `${m.role.toUpperCase()}: ${m.content}`).join('\n')}
@@ -1294,7 +1377,7 @@ app.post('/api/generate-final-script', async (req, res) => {
 {
   "title": "Viral Script Name",
     "concept": "Brief concept summary",
-      "awareness_level": "${dna.awareness_level}",
+      "awareness_level": "${dna.awareness_level || dna.niche || 'General'}",
         "big_idea": "Synthesis of the chat + DNA",
           "shot_list": [
             { "time": "0-3s", "visual": "...", "audio": "...", "overlay": "..." },

@@ -200,23 +200,29 @@ async function extractFrames(videoUrl, manualTimestamps = null) {
 
         let timestamps = manualTimestamps;
         if (!timestamps) {
-            timestamps = [
-                0,
-                Math.min(1.5, duration * 0.05),
-                Math.min(3, duration * 0.1),
-                duration * 0.25,
-                duration * 0.4,
-                duration * 0.6,
-                duration * 0.8,
-                duration * 0.95
-            ].map(t => Math.floor(t));
-            timestamps = [...new Set(timestamps)].filter(t => t < duration).slice(0, 8);
+            // DENSE HOOK SAMPLING: 7 frames in the first 3 seconds (the money window)
+            const hookFrames = [0, 0.5, 1, 1.5, 2, 2.5, 3].filter(t => t < duration);
+            // BODY FRAMES: every 2.5 seconds for the rest of the video
+            const bodyFrames = [];
+            for (let t = 4; t < duration; t += 2.5) bodyFrames.push(Math.round(t * 10) / 10);
+            timestamps = [...new Set([...hookFrames, ...bodyFrames])];
+            timestamps = timestamps.filter(t => t < duration).slice(0, 20);
         }
+
+        // Label each timestamp with its phase for the AI
+        const labeledTimestamps = timestamps.map(t => {
+            let phase = 'MID-ROLL';
+            if (t <= 1) phase = 'HOOK OPEN';
+            else if (t <= 3) phase = 'HOOK';
+            else if (t <= 8) phase = 'PROBLEM/SETUP';
+            else if (t >= duration * 0.85) phase = 'CTA/CLOSE';
+            else if (t >= duration * 0.5) phase = 'SOLUTION/PAYOFF';
+            return { time: t, phase };
+        });
 
         const frames = [];
 
-
-        for (const timestamp of timestamps) {
+        for (const { time: timestamp, phase } of labeledTimestamps) {
             const frameFilename = `frame_${videoId}_${timestamp}.jpg`;
             const framePath = path.join(tempDir, frameFilename);
 
@@ -233,16 +239,12 @@ async function extractFrames(videoUrl, manualTimestamps = null) {
                         })
                         .on('error', (err, stdout, stderr) => {
 
-
-
-
                             ffmpeg(videoPath)
                                 .seek(timestamp)
                                 .frames(1)
                                 .output(framePath)
                                 .on('end', resolve)
                                 .on('error', (err2, stdout2, stderr2) => {
-
                                     reject(err2);
                                 })
                                 .run();
@@ -254,6 +256,7 @@ async function extractFrames(videoUrl, manualTimestamps = null) {
                     const frameBuffer = fs.readFileSync(framePath);
                     frames.push({
                         timestamp,
+                        phase,
                         base64: frameBuffer.toString('base64'),
                         mimeType: 'image/jpeg'
                     });
