@@ -21,6 +21,7 @@ ${transcript ? `SPOKEN TRANSCRIPT (AUDIO DNA): "${transcript}"` : 'No audio tran
 ${music ? `BACKGROUND MUSIC (SHAZAM DATA): "${music}"` : ''}
 
 I'm providing you with ${frames.length} frames extracted across the video.
+CRITICAL: You must actively look at the visual elements in these attached image frames. Pay attention to text on screen, facial expressions, setting, and pacing. Do not rely solely on the audio transcript.
 
 Analyze the visual structure AND how it aligns with the spoken script:
 
@@ -67,10 +68,10 @@ Output as JSON with this EXACT structure:
     { "label": "Strong CTA", "passed": false }
   ],
   "actionable_directions": [
-    "Tip 1...",
-    "Tip 2..."
+    "High-level strategy to scale this ad format...",
+    "Specific tweak to increase ROI..."
   ],
-  "the_secret_sauce": "The one thing that makes this video viral/effective..."
+  "the_secret_sauce": "The one psychological lever that makes this video highly profitable..."
 }
 `
         },
@@ -87,7 +88,7 @@ Output as JSON with this EXACT structure:
   try {
     const completion = await groq.chat.completions.create({
       messages,
-      model: 'llama-3.2-90b-vision-preview',
+      model: 'meta-llama/llama-4-scout-17b-16e-instruct',
       response_format: { type: 'json_object' },
       temperature: 0.2,
     });

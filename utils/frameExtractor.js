@@ -202,12 +202,15 @@ async function extractFrames(videoUrl, manualTimestamps = null) {
         if (!timestamps) {
             timestamps = [
                 0,
-                Math.min(2, duration * 0.1),
+                Math.min(1.5, duration * 0.05),
+                Math.min(3, duration * 0.1),
                 duration * 0.25,
-                duration * 0.5,
-                duration * 0.9
+                duration * 0.4,
+                duration * 0.6,
+                duration * 0.8,
+                duration * 0.95
             ].map(t => Math.floor(t));
-            timestamps = [...new Set(timestamps)].filter(t => t < duration).slice(0, 5);
+            timestamps = [...new Set(timestamps)].filter(t => t < duration).slice(0, 8);
         }
 
         const frames = [];
