@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const cookieParser = require('cookie-parser');
 const dotenv = require('dotenv');
+const path = require('path');
 const Groq = require('groq-sdk');
 const multer = require('multer');
 const { extractFrames } = require('./utils/frameExtractor');
@@ -18,6 +19,10 @@ const polarWebhooks = require('./routes/polar');
 const userRouter = require('./routes/user');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
+const { requireAuth, requireOwnership } = require('./middleware/clerkAuth');
+const { sanitizeVideoUrl } = require('./utils/sanitize');
+const { enqueueVideoJob, getQueueStats } = require('./utils/videoQueue');
+const { getCachedAnalysis, setCachedAnalysis, getCacheStats } = require('./utils/analysisCache');
 
 dotenv.config();
 
@@ -36,7 +41,23 @@ const port = process.env.PORT || 4000;
 
 app.set('trust proxy', 1);
 
-const upload = multer({ dest: 'uploads/' });
+// Ensure uploads directory exists — uses /tmp on Modal, local uploads/ otherwise
+const uploadsDir = process.env.UPLOAD_DIR || path.join(__dirname, 'uploads');
+if (!require('fs').existsSync(uploadsDir)) {
+  require('fs').mkdirSync(uploadsDir, { recursive: true });
+}
+
+const upload = multer({ 
+  dest: uploadsDir,
+  limits: { fileSize: 50 * 1024 * 1024 }, // 50MB max
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype.startsWith('video/')) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only video files are allowed'));
+    }
+  }
+});
 
 
 
@@ -53,11 +74,33 @@ app.use(cors({
 app.use(helmet());
 app.use(cookieParser());
 
+// Global limiter — 150 req per 15 min per IP
 const globalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 100, // Limit each IP to 100 requests per 15 mins
-  message: { error: 'Too many requests' }
+  max: 150,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests, slow down.' }
 });
+
+// Strict limiter for expensive AI routes — 20 req per 15 min per IP
+const scanLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many scan requests. Please wait before trying again.' }
+});
+
+// Auth/registration limiter — 10 attempts per 15 min per IP
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many auth attempts. Please wait.' }
+});
+
 app.use('/api/', globalLimiter);
 
 
@@ -80,11 +123,13 @@ try {
 }
 
 app.get('/health', async (req, res) => {
+  const cacheStats = await getCacheStats();
   res.json({
     status: 'ok',
     timestamp: new Date(),
     message: 'Server is running.',
-    groq_configured: !!groq
+    groq_configured: !!groq,
+    cache: cacheStats
   });
 });
 
@@ -99,10 +144,17 @@ async function resolveInternalId(id, clerkInfo = null) {
     let [user] = await sql`SELECT id FROM users WHERE clerk_id = ${id}`;
     if (user) return user.id;
 
-const email = clerkInfo?.email || null;
+    // Only auto-create if we have valid Clerk info (email from a real Clerk token)
+    // This prevents DB spam from random IDs
+    const email = clerkInfo?.email || null;
     const name = clerkInfo?.name || null;
 
-const [newUser] = await sql`
+    if (!email) {
+      // No email = not a real Clerk user, don't create
+      return null;
+    }
+
+    const [newUser] = await sql`
       INSERT INTO users (clerk_id, email, name, subscription_tier, created_at)
       VALUES (${id}, ${email}, ${name}, 'free', ${new Date()})
       ON CONFLICT (email) DO UPDATE SET clerk_id = ${id}
@@ -110,7 +162,6 @@ const [newUser] = await sql`
     `;
     return newUser.id;
   } catch (err) {
-
     return null;
   }
 }
@@ -118,9 +169,10 @@ const [newUser] = await sql`
 app.use('/api/admin/auth', adminAuthRouter);
 app.use('/api/admin', adminRouter);
 app.use('/api/support', supportRouter);
+app.use('/api/auth', authLimiter); // Rate limit auth endpoints
 app.use('/api', userRouter);
 
-app.get('/api/debug', async (req, res) => {
+app.get('/api/debug', requireAuth, async (req, res) => {
   const { execSync } = require('child_process');
   const fs = require('fs');
   const axios = require('axios');
@@ -197,7 +249,7 @@ try {
 
 
 
-app.get('/api/test-tiktok', async (req, res) => {
+app.get('/api/test-tiktok', requireAuth, async (req, res) => {
   const videoUrl = req.query.url;
   if (!videoUrl) return res.status(400).json({ error: 'Pass ?url=TIKTOK_URL' });
   const axios = require('axios');
@@ -261,7 +313,7 @@ try {
   res.json(result);
 });
 
-app.post('/api/save-to-vault', async (req, res) => {
+app.post('/api/save-to-vault', requireAuth, requireOwnership, async (req, res) => {
   let { userId, title, videoUrl, visualDna } = req.body;
 
   if (!userId || !videoUrl) {
@@ -287,7 +339,7 @@ await sql`UPDATE users SET total_pins = total_pins + 1 WHERE id = ${userId}`;
   }
 });
 
-app.get('/api/user-ads', async (req, res) => {
+app.get('/api/user-ads', requireAuth, async (req, res) => {
   let { userId, search, niche } = req.query;
 
   if (!userId) {
@@ -372,7 +424,7 @@ async function checkLimits(inputUserId, type) {
   }
 }
 
-app.post('/api/batch-analyze', async (req, res) => {
+app.post('/api/batch-analyze', requireAuth, requireOwnership, scanLimiter, async (req, res) => {
   let { urls, userId } = req.body;
   if (!userId) return res.status(400).json({ error: 'User ID required' });
 
@@ -464,7 +516,7 @@ res.json({
   });
 });
 
-app.post('/api/export-report', async (req, res) => {
+app.post('/api/export-report', requireAuth, requireOwnership, async (req, res) => {
   let { analysis, videoUrl, userId } = req.body;
   if (!userId) return res.status(400).json({ error: 'User ID required' });
 
@@ -531,14 +583,14 @@ const [user] = await sql`SELECT subscription_tier FROM users WHERE id = ${userId
 
 
 
-app.post('/api/analyze-video', upload.single('video'), async (req, res) => {
+app.post('/api/analyze-video', requireAuth, requireOwnership, scanLimiter, upload.single('video'), async (req, res) => {
   let userId = req.body.userId;
   if (!userId) return res.status(400).json({ error: 'User ID required' });
 
   userId = await resolveInternalId(userId);
   if (!userId) return res.status(404).json({ error: 'User resolution failed' });
 
-if (userId) {
+  if (userId) {
     const limit = await checkLimits(userId, 'scan');
     if (!limit.allowed) {
       return res.status(403).json({
@@ -550,69 +602,64 @@ if (userId) {
   }
 
   try {
+    const result = await enqueueVideoJob(async () => {
+      const { frames, audioPath } = await extractFrames(req.file.path);
 
-    const { frames, audioPath } = await extractFrames(req.file.path);
-
-    if (!frames || frames.length === 0) {
-      throw new Error('No frames could be extracted from this video.');
-    }
-
-    let transcript = "";
-    let music = null;
-    if (audioPath) {
-      try {
-        music = await identifyMusic(audioPath);
-      } catch (err) {
-        console.error('Music identification failed:', err.message);
+      if (!frames || frames.length === 0) {
+        throw new Error('No frames could be extracted from this video.');
       }
-      try {
-        transcript = await transcribeAudio(audioPath);
-      } catch (err) {
-        console.error('Transcription failed:', err.message);
+
+      let transcript = "";
+      let music = null;
+      if (audioPath) {
+        try { music = await identifyMusic(audioPath); } catch (err) { console.error('Music identification failed:', err.message); }
+        try { transcript = await transcribeAudio(audioPath); } catch (err) { console.error('Transcription failed:', err.message); }
       }
-    }
 
-const analysis = await analyzeVideoFrames(frames, 'Uploaded Draft Analysis', transcript, music);
+      const analysis = await analyzeVideoFrames(frames, 'Uploaded Draft Analysis', transcript, music);
 
-if (userId) {
+      if (userId) {
+        try {
+          await sql`UPDATE users SET total_videos_analyzed = total_videos_analyzed + 1 WHERE id = ${userId}`;
+          await sql`INSERT INTO scan_events (user_id, created_at) VALUES (${userId}, NOW())`;
+        } catch (err) {}
+      }
+
       try {
-        await sql`UPDATE users SET total_videos_analyzed = total_videos_analyzed + 1 WHERE id = ${userId}`;
-        await sql`INSERT INTO scan_events (user_id, created_at) VALUES (${userId}, NOW())`;
-      } catch (err) {}
-    }
+        await sql`
+          INSERT INTO ad_benchmarks (user_id, niche, hook_power, retention_score, conversion_trigger,
+            awareness_level, style, primary_trigger, transcript_length)
+          VALUES (${userId || null}, ${analysis.niche || 'General'},
+            ${analysis.metrics?.hook_power || 0}, ${analysis.metrics?.retention_score || 0},
+            ${analysis.metrics?.conversion_trigger || 0}, ${analysis.awareness_level || null},
+            ${analysis.vibe_assessment?.style || null}, ${analysis.psychology_breakdown?.primary_trigger || null},
+            ${transcript?.length || 0})
+        `;
+      } catch (e) { /* silent */ }
 
-    // Auto-save to benchmark database
-    try {
-      await sql`
-        INSERT INTO ad_benchmarks (user_id, niche, hook_power, retention_score, conversion_trigger, 
-          awareness_level, style, primary_trigger, transcript_length)
-        VALUES (${userId || null}, ${analysis.niche || 'General'}, 
-          ${analysis.metrics?.hook_power || 0}, ${analysis.metrics?.retention_score || 0},
-          ${analysis.metrics?.conversion_trigger || 0}, ${analysis.awareness_level || null},
-          ${analysis.vibe_assessment?.style || null}, ${analysis.psychology_breakdown?.primary_trigger || null},
-          ${transcript?.length || 0})
-      `;
-    } catch (e) { /* silent benchmark save */ }
-
-    res.json({
-      success: true,
-      analysis,
-      framesAnalyzed: frames.length,
-      hasAudio: !!transcript
+      return { analysis, framesAnalyzed: frames.length, hasAudio: !!transcript };
     });
+
+    res.json({ success: true, ...result });
 
   } catch (error) {
-
-    res.status(500).json({
-      error: 'Video audit failed',
-      details: error.message
-    });
+    if (error.message?.includes('timed out')) {
+      return res.status(503).json({ error: 'Server is busy processing other videos. Please try again in a moment.' });
+    }
+    res.status(500).json({ error: 'Video audit failed', details: error.message });
   }
 });
 
-app.post('/api/analyze-video-url', async (req, res) => {
+app.post('/api/analyze-video-url', requireAuth, requireOwnership, scanLimiter, async (req, res) => {
   let { videoUrl, userId } = req.body;
   if (!videoUrl) return res.status(400).json({ error: 'Video URL required' });
+
+  // Sanitize URL before passing to frame extractor
+  const sanitized = sanitizeVideoUrl(videoUrl);
+  if (!sanitized.valid) {
+    return res.status(400).json({ error: sanitized.error });
+  }
+  videoUrl = sanitized.url;
 
   userId = await resolveInternalId(userId);
   if (!userId) return res.status(404).json({ error: 'User resolution failed' });
@@ -621,7 +668,7 @@ app.post('/api/analyze-video-url', async (req, res) => {
     return res.status(503).json({ error: 'Groq API not configured' });
   }
 
-if (userId) {
+  if (userId) {
     const limit = await checkLimits(userId, 'scan');
     if (!limit.allowed) {
       return res.status(403).json({
@@ -633,64 +680,70 @@ if (userId) {
   }
 
   try {
+    const originalUrl = req.body.videoUrl;
 
-    const { frames, audioPath } = await extractFrames(videoUrl);
-
-    if (!frames || frames.length === 0) {
-      throw new Error('No frames could be extracted from this URL.');
-    }
-
-let transcript = "";
-let music = null;
-    if (audioPath) {
-      try {
-        music = await identifyMusic(audioPath);
-      } catch (err) {
-        console.error('Music identification failed:', err.message);
+    // Check cache first — same URL = same DNA, no need to re-process
+    const cached = await getCachedAnalysis(videoUrl);
+    if (cached) {
+      // Still log the scan event for usage tracking
+      if (userId) {
+        try {
+          await sql`UPDATE users SET total_videos_analyzed = total_videos_analyzed + 1 WHERE id = ${userId}`;
+          await sql`INSERT INTO scan_events (user_id, created_at) VALUES (${userId}, NOW())`;
+        } catch (err) {}
       }
-      try {
-        transcript = await transcribeAudio(audioPath);
+      return res.json({ success: true, ...cached, fromCache: true });
+    }
 
-      } catch (err) {
+    const result = await enqueueVideoJob(async () => {
+      const { frames, audioPath } = await extractFrames(videoUrl);
 
+      if (!frames || frames.length === 0) {
+        throw new Error('No frames could be extracted from this URL.');
       }
-    }
 
-const analysis = await analyzeVideoFrames(frames, 'URL Analysis', transcript, music);
+      let transcript = "";
+      let music = null;
+      if (audioPath) {
+        try { music = await identifyMusic(audioPath); } catch (err) { console.error('Music identification failed:', err.message); }
+        try { transcript = await transcribeAudio(audioPath); } catch (err) {}
+      }
 
-if (userId) {
+      const analysis = await analyzeVideoFrames(frames, 'URL Analysis', transcript, music);
+
+      if (userId) {
+        try {
+          await sql`UPDATE users SET total_videos_analyzed = total_videos_analyzed + 1 WHERE id = ${userId}`;
+          await sql`INSERT INTO scan_events (user_id, created_at) VALUES (${userId}, NOW())`;
+        } catch (err) {}
+      }
+
       try {
-        await sql`UPDATE users SET total_videos_analyzed = total_videos_analyzed + 1 WHERE id = ${userId}`;
-        await sql`INSERT INTO scan_events (user_id, created_at) VALUES (${userId}, NOW())`;
-      } catch (err) {}
-    }
+        await sql`
+          INSERT INTO ad_benchmarks (user_id, video_url, niche, hook_power, retention_score, conversion_trigger,
+            awareness_level, style, primary_trigger, transcript_length)
+          VALUES (${userId || null}, ${originalUrl || null}, ${analysis.niche || 'General'},
+            ${analysis.metrics?.hook_power || 0}, ${analysis.metrics?.retention_score || 0},
+            ${analysis.metrics?.conversion_trigger || 0}, ${analysis.awareness_level || null},
+            ${analysis.vibe_assessment?.style || null}, ${analysis.psychology_breakdown?.primary_trigger || null},
+            ${transcript?.length || 0})
+        `;
+      } catch (e) { /* silent */ }
 
-    // Auto-save to benchmark database
-    try {
-      await sql`
-        INSERT INTO ad_benchmarks (user_id, video_url, niche, hook_power, retention_score, conversion_trigger, 
-          awareness_level, style, primary_trigger, transcript_length)
-        VALUES (${userId || null}, ${req.body.videoUrl || null}, ${analysis.niche || 'General'}, 
-          ${analysis.metrics?.hook_power || 0}, ${analysis.metrics?.retention_score || 0},
-          ${analysis.metrics?.conversion_trigger || 0}, ${analysis.awareness_level || null},
-          ${analysis.vibe_assessment?.style || null}, ${analysis.psychology_breakdown?.primary_trigger || null},
-          ${transcript?.length || 0})
-      `;
-    } catch (e) { /* silent benchmark save */ }
+      // Cache the result for future requests
+      const resultPayload = { analysis, framesAnalyzed: frames.length, hasAudio: !!transcript };
+      await setCachedAnalysis(videoUrl, resultPayload);
 
-    res.json({
-      success: true,
-      analysis,
-      framesAnalyzed: frames.length,
-      hasAudio: !!transcript
+      return resultPayload;
     });
+
+    res.json({ success: true, ...result });
 
   } catch (error) {
-
-    res.status(500).json({
-      error: 'URL Video audit failed',
-      details: error.message
-    });
+    if (error.message?.includes('timed out')) {
+      return res.status(503).json({ error: 'Server is busy processing other videos. Please try again in a moment.' });
+    }
+    res.status(500).json({ error: 'URL Video audit failed', details: error.message });
   }
 });
 
@@ -715,7 +768,7 @@ app.get('/api/niche-benchmarks', async (req, res) => {
   }
 });
 
-app.post('/api/generate-script', async (req, res) => {
+app.post('/api/generate-script', requireAuth, requireOwnership, async (req, res) => {
   let { productName, description, adId, answers, privateDna, userId } = req.body;
   if (!userId) return res.status(400).json({ error: 'User ID required' });
 
@@ -1046,7 +1099,7 @@ app.get('/api/ads', async (req, res) => {
   }
 });
 
-app.post('/api/script-strategy-questions', async (req, res) => {
+app.post('/api/script-strategy-questions', requireAuth, requireOwnership, async (req, res) => {
   let { adId, productName, description, privateDna, userId } = req.body;
 
   if (!userId) return res.status(400).json({ error: 'User ID required' });
@@ -1122,7 +1175,7 @@ if (adData.analysis && adData.analysis.hook) {
   }
 });
 
-app.post('/api/creative-director-chat', async (req, res) => {
+app.post('/api/creative-director-chat', requireAuth, requireOwnership, async (req, res) => {
   let { messages, dna, isRoastMode, userId } = req.body;
 
   if (!groq) return res.status(503).json({ error: 'AI service not available' });
@@ -1217,7 +1270,7 @@ app.post('/api/creative-director-chat', async (req, res) => {
   }
 });
 
-app.post('/api/save-lounge-session', async (req, res) => {
+app.post('/api/save-lounge-session', requireAuth, requireOwnership, async (req, res) => {
   let { sessionId, videoUrl, dna, messages, title, userId } = req.body;
   if (!userId) return res.status(400).json({ error: 'User ID required' });
 
@@ -1269,7 +1322,7 @@ try {
   }
 });
 
-app.get('/api/user-sessions', async (req, res) => {
+app.get('/api/user-sessions', requireAuth, async (req, res) => {
   let userId = req.query.userId;
   if (!userId) return res.status(400).json({ error: 'User ID required' });
 
@@ -1307,7 +1360,7 @@ res.json(formattedSessions);
   }
 });
 
-app.get('/api/lounge-session/:id', async (req, res) => {
+app.get('/api/lounge-session/:id', requireAuth, async (req, res) => {
   try {
     const { id: sessionId } = req.params;
     const [session] = await sql`SELECT * FROM lounge_sessions WHERE id = ${sessionId}`;
@@ -1328,7 +1381,7 @@ app.get('/api/lounge-session/:id', async (req, res) => {
   }
 });
 
-app.delete('/api/lounge-session/:id', async (req, res) => {
+app.delete('/api/lounge-session/:id', requireAuth, async (req, res) => {
   try {
     const { id: sessionId } = req.params;
     await sql`DELETE FROM lounge_sessions WHERE id = ${sessionId}`;
@@ -1340,7 +1393,7 @@ app.delete('/api/lounge-session/:id', async (req, res) => {
 });
 
 
-app.post('/api/generate-final-script', async (req, res) => {
+app.post('/api/generate-final-script', requireAuth, requireOwnership, async (req, res) => {
   let { messages, dna, userId } = req.body;
   if (!userId) return res.status(400).json({ error: 'User ID required' });
 
@@ -1412,7 +1465,7 @@ await sql`
   }
 });
 
-app.post('/api/team/invite', async (req, res) => {
+app.post('/api/team/invite', requireAuth, requireOwnership, async (req, res) => {
   const { email, userId } = req.body;
   if (!userId) return res.status(400).json({ error: 'User ID required' });
 
@@ -1453,7 +1506,7 @@ const [existingUser] = await sql`SELECT id FROM users WHERE email = ${email}`;
   }
 });
 
-app.get('/api/team/list', async (req, res) => {
+app.get('/api/team/list', requireAuth, async (req, res) => {
   const { userId } = req.query;
   if (!userId) return res.status(400).json({ error: 'User ID required' });
 
@@ -1469,7 +1522,7 @@ app.get('/api/team/list', async (req, res) => {
   }
 });
 
-app.delete('/api/team/remove/:memberId', async (req, res) => {
+app.delete('/api/team/remove/:memberId', requireAuth, requireOwnership, async (req, res) => {
   const { userId } = req.body;
   if (!userId) return res.status(400).json({ error: 'User ID required' });
   try {
@@ -1561,6 +1614,12 @@ return res.status(200).json({ status: 'success', tier: subscriptionTier });
   }
 });
 
+// Queue status endpoint — useful for monitoring
+app.get('/api/queue-status', requireAuth, async (req, res) => {
+  const stats = await getQueueStats();
+  res.json({ ...stats, status: 'ok' });
+});
+
 app.use((err, req, res, next) => {
   console.error('Unhandled server error:', err);
   if (res.headersSent) return next(err);
@@ -1570,7 +1629,7 @@ app.use((err, req, res, next) => {
   });
 });
 
-app.listen(port, async () => {
+const server = app.listen(port, async () => {
 
 try {
     const isHealthy = await testConnection();
@@ -1600,7 +1659,7 @@ await sql`
             'Elite Master Admin', 
             'admin@eixora.ai', 
             TRUE, 
-            'agency', 
+            'studio', 
             NOW()
           )
           ON CONFLICT (id) DO NOTHING
@@ -1617,3 +1676,25 @@ await sql`
 
   }
 });
+
+// Graceful shutdown — finish in-flight requests before exiting
+// This works with PM2 cluster mode and Docker
+function gracefulShutdown(signal) {
+  console.log(`[Server] ${signal} received. Shutting down gracefully...`);
+  server.close(() => {
+    console.log('[Server] All connections closed. Exiting.');
+    process.exit(0);
+  });
+
+  // Force exit after 15s if connections don't close
+  setTimeout(() => {
+    console.error('[Server] Forced shutdown after timeout.');
+    process.exit(1);
+  }, 15000);
+}
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
+// Tell PM2 the app is ready (used with wait_ready: true in ecosystem.config.js)
+if (process.send) process.send('ready');

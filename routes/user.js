@@ -93,11 +93,6 @@ router.get('/me', async (req, res) => {
     let effectiveTier = user.subscriptionTier;
     // Normalize legacy 'agency' tier to 'studio'
     if (effectiveTier === 'agency') effectiveTier = 'studio';
-    const adminEmails = ['deamirclothingstores@gmail.com', 'hello@eixora.store', 'admin@eixora.ai'];
-    const currentEmail = email || user.email;
-    if (currentEmail && adminEmails.includes(currentEmail.toLowerCase())) {
-        effectiveTier = 'studio';
-    }
 
     res.json({
       ...user,
