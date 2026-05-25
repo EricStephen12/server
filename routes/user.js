@@ -38,6 +38,15 @@ router.get('/me', async (req, res) => {
   let userId = req.query.userId;
   const { email, name } = req.query;
   userId = await resolveInternalId(userId, { email, name });
+  
+  // If resolveInternalId failed but we have an email, try direct email lookup
+  if (!userId && email) {
+    try {
+      const [emailUser] = await sql`SELECT id FROM users WHERE LOWER(email) = LOWER(${email})`;
+      if (emailUser) userId = emailUser.id;
+    } catch (e) {}
+  }
+  
   if (!userId) return res.status(404).json({ error: 'User not found' });
 
   try {
@@ -84,14 +93,20 @@ router.get('/me', async (req, res) => {
       WHERE user_id = ${userId} AND created_at > ${oneMonthAgo}
     `;
 
-    const [{ scanCount }] = await sql`
-      SELECT count(*)::int as "scanCount" FROM scan_events
-      WHERE user_id = ${userId} AND created_at > ${oneMonthAgo}
-    `;
+    let scanCount = 0;
+    try {
+      const [{ scanCount: sc }] = await sql`
+        SELECT count(*)::int as "scanCount" FROM scan_events
+        WHERE user_id = ${userId} AND created_at > ${oneMonthAgo}
+      `;
+      scanCount = sc || 0;
+    } catch (e) {
+      // scan_events table might not exist yet — fall back to total_videos_analyzed
+      scanCount = user.totalVideosAnalyzed || 0;
+    }
 
-    // ADMIN BYPASS: Always give owner accounts the top tier plan
-    let effectiveTier = user.subscriptionTier;
     // Normalize legacy 'agency' tier to 'studio'
+    let effectiveTier = user.subscriptionTier;
     if (effectiveTier === 'agency') effectiveTier = 'studio';
 
     res.json({
@@ -112,7 +127,7 @@ router.get('/me', async (req, res) => {
       }
     });
   } catch (err) {
-
+    console.error('[/me] Error fetching profile:', err.message);
     res.status(500).json({ error: 'Failed to fetch profile' });
   }
 });
@@ -184,10 +199,16 @@ router.get('/plan-check', async (req, res) => {
     const oneMonthAgo = new Date();
     oneMonthAgo.setDate(oneMonthAgo.getDate() - 30);
 
-    const [{ scanCount }] = await sql`
-      SELECT count(*)::int as "scanCount" FROM scan_events 
-      WHERE user_id = ${userId} AND created_at > ${oneMonthAgo}
-    `;
+    let scanCount = 0;
+    try {
+      const [{ scanCount: sc }] = await sql`
+        SELECT count(*)::int as "scanCount" FROM scan_events 
+        WHERE user_id = ${userId} AND created_at > ${oneMonthAgo}
+      `;
+      scanCount = sc || 0;
+    } catch (e) {
+      scanCount = 0;
+    }
 
     const [{ scriptCount }] = await sql`
       SELECT count(*)::int as "scriptCount" FROM scripts 
