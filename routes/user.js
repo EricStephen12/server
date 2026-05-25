@@ -79,20 +79,28 @@ router.get('/me', async (req, res) => {
     const oneMonthAgo = new Date();
     oneMonthAgo.setDate(oneMonthAgo.getDate() - 30);
 
-    const [{ scanCount }] = await sql`
-      SELECT count(*)::int as "scanCount" FROM lounge_sessions 
-      WHERE user_id = ${userId} AND updated_at > ${oneMonthAgo}
-    `;
-
     const [{ scriptCount }] = await sql`
       SELECT count(*)::int as "scriptCount" FROM scripts 
       WHERE user_id = ${userId} AND created_at > ${oneMonthAgo}
     `;
 
+    const [{ scanCount }] = await sql`
+      SELECT count(*)::int as "scanCount" FROM scan_events
+      WHERE user_id = ${userId} AND created_at > ${oneMonthAgo}
+    `;
+
+    // ADMIN BYPASS: Always give owner accounts the top tier plan
+    let effectiveTier = user.subscriptionTier;
+    const adminEmails = ['deamirclothingstores@gmail.com', 'hello@eixora.store', 'admin@eixora.ai'];
+    const currentEmail = email || user.email;
+    if (currentEmail && adminEmails.includes(currentEmail.toLowerCase())) {
+        effectiveTier = 'agency';
+    }
+
     res.json({
       ...user,
-      plan_type: user.subscriptionTier,
-      subscription_tier: user.subscriptionTier,
+      plan_type: effectiveTier,
+      subscription_tier: effectiveTier,
       credits_remaining: user.creditsRemaining,
       total_scripts: user.totalScripts,
       total_pins: user.totalPins,
@@ -102,7 +110,7 @@ router.get('/me', async (req, res) => {
       primary_goal: user.primaryGoal,
       created_at: user.createdAt,
       monthly_usage: {
-        scans: scanCount,
+        scans: scanCount || 0,
         scripts: scriptCount
       }
     });
@@ -180,8 +188,8 @@ router.get('/plan-check', async (req, res) => {
     oneMonthAgo.setDate(oneMonthAgo.getDate() - 30);
 
     const [{ scanCount }] = await sql`
-      SELECT count(*)::int as "scanCount" FROM lounge_sessions 
-      WHERE user_id = ${userId} AND updated_at > ${oneMonthAgo}
+      SELECT count(*)::int as "scanCount" FROM scan_events 
+      WHERE user_id = ${userId} AND created_at > ${oneMonthAgo}
     `;
 
     const [{ scriptCount }] = await sql`

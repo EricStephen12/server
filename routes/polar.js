@@ -30,7 +30,7 @@ router.post('/', express.raw({ type: 'application/json' }), async (req, res) => 
             
             if (!plan && data.amount) {
 
-                if (data.amount >= 5900) {
+                if (data.amount >= 1000) {
                     plan = 'studio';
                 } else {
                     plan = 'creator';
@@ -49,7 +49,7 @@ router.post('/', express.raw({ type: 'application/json' }), async (req, res) => 
                     UPDATE users 
                     SET subscription_tier = ${plan}, 
                         updated_at = ${new Date()}
-                    WHERE email = ${email}
+                    WHERE LOWER(email) = LOWER(${email})
                 `;
                 
                 return res.status(200).json({ success: true, message: `Upgraded to ${plan}` });
@@ -67,7 +67,7 @@ router.post('/', express.raw({ type: 'application/json' }), async (req, res) => 
                         UPDATE users 
                         SET subscription_tier = 'free', 
                             updated_at = ${new Date()}
-                        WHERE email = ${email}
+                        WHERE LOWER(email) = LOWER(${email})
                     `;
                     
                     return res.status(200).json({ success: true, message: `Downgraded ${email} to free` });
@@ -75,7 +75,7 @@ router.post('/', express.raw({ type: 'application/json' }), async (req, res) => 
             } else if (event.type === 'subscription.updated') {
 
                  let plan = data.metadata?.plan_type;
-                 if (!plan && data.amount) plan = data.amount >= 5900 ? 'studio' : 'creator';
+                 if (!plan && data.amount) plan = data.amount >= 1000 ? 'studio' : 'creator';
                  if (!plan && data.product?.name) plan = data.product.name.toLowerCase().includes('studio') ? 'studio' : 'creator';
                  if (!plan) plan = 'creator';
 
@@ -85,7 +85,7 @@ router.post('/', express.raw({ type: 'application/json' }), async (req, res) => 
                         UPDATE users 
                         SET subscription_tier = ${plan}, 
                             updated_at = ${new Date()}
-                        WHERE email = ${email}
+                        WHERE LOWER(email) = LOWER(${email})
                     `;
                     return res.status(200).json({ success: true, message: `Updated ${email} to ${plan}` });
                  }

@@ -38,14 +38,7 @@ app.set('trust proxy', 1);
 
 const upload = multer({ dest: 'uploads/' });
 
-const allowedOrigins = [
-  'http://localhost:3000',
-  'http://localhost:3001',
-  (process.env.FRONTEND_URL || '').replace(/\/$/, ''),
-  (process.env.CLIENT_URL || '').replace(/\/$/, ''),
-  'https://eixora.vercel.app',
-  'https://client-phi-ivory.vercel.app'
-].filter(Boolean);
+
 
 app.use(cors({
   origin: function (origin, callback) {
@@ -351,15 +344,15 @@ async function checkLimits(inputUserId, type) {
       agency: 250 // Backward compatibility
     };
 
-    const userLimit = limits[tier] || 3;
+    const userLimit = limits[tier] ?? 0;
 
     const oneMonthAgo = new Date();
     oneMonthAgo.setDate(oneMonthAgo.getDate() - 30);
 
     if (type === 'scan') {
       const [{ count }] = await sql`
-        SELECT count(*)::int FROM lounge_sessions 
-        WHERE user_id = ${userId} AND updated_at > ${oneMonthAgo}
+        SELECT count(*)::int FROM scan_events 
+        WHERE user_id = ${userId} AND created_at > ${oneMonthAgo}
       `;
       return { allowed: count < userLimit, count, limit: userLimit };
     }
@@ -549,8 +542,8 @@ if (userId) {
     const limit = await checkLimits(userId, 'scan');
     if (!limit.allowed) {
       return res.status(403).json({
-        error: 'Monthly Scan Limit Reached',
-        details: `Free users are limited to 3 scans per month. You have used ${limit.count}/${limit.limit}. Please upgrade to lock in the Founding Rate!`,
+        error: 'Creative License Inactive',
+        details: 'You need an active subscription or trial to scan videos. Upgrade now to get started!',
         upgradeRequired: true
       });
     }
@@ -584,6 +577,7 @@ const analysis = await analyzeVideoFrames(frames, 'Uploaded Draft Analysis', tra
 if (userId) {
       try {
         await sql`UPDATE users SET total_videos_analyzed = total_videos_analyzed + 1 WHERE id = ${userId}`;
+        await sql`INSERT INTO scan_events (user_id, created_at) VALUES (${userId}, NOW())`;
       } catch (err) {}
     }
 
@@ -631,8 +625,8 @@ if (userId) {
     const limit = await checkLimits(userId, 'scan');
     if (!limit.allowed) {
       return res.status(403).json({
-        error: 'Monthly Scan Limit Reached',
-        details: `Free users are limited to 3 scans per month. You have used ${limit.count}/${limit.limit}. Please upgrade to lock in the Founding Rate!`,
+        error: 'Creative License Inactive',
+        details: 'You need an active subscription or trial to scan videos. Upgrade now to get started!',
         upgradeRequired: true
       });
     }
@@ -667,6 +661,7 @@ const analysis = await analyzeVideoFrames(frames, 'URL Analysis', transcript, mu
 if (userId) {
       try {
         await sql`UPDATE users SET total_videos_analyzed = total_videos_analyzed + 1 WHERE id = ${userId}`;
+        await sql`INSERT INTO scan_events (user_id, created_at) VALUES (${userId}, NOW())`;
       } catch (err) {}
     }
 
