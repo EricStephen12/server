@@ -341,7 +341,7 @@ async function checkLimits(inputUserId, type) {
       free: 3,
       creator: 30,
       studio: 250,
-      agency: 250 // Backward compatibility
+      agency: 250 // Legacy — treated same as studio
     };
 
     const userLimit = limits[tier] ?? 0;
@@ -389,10 +389,10 @@ app.post('/api/batch-analyze', async (req, res) => {
 
 const [userData] = await sql`SELECT subscription_tier FROM users WHERE id = ${userId}`;
   const tier = userData?.subscription_tier || 'free';
-  if (tier !== 'agency' && tier !== 'studio') {
+  if (tier !== 'studio' && tier !== 'agency') {
     return res.status(403).json({
-      error: 'Agency Access Required',
-      details: 'Batch Analysis is exclusive to the Agency Plan. Upgrade to unlock bulk DNA extraction.'
+      error: 'Studio Access Required',
+      details: 'Batch Analysis is exclusive to The Studio Plan. Upgrade to unlock bulk DNA extraction.'
     });
   }
 
@@ -473,10 +473,10 @@ app.post('/api/export-report', async (req, res) => {
 
 const [user] = await sql`SELECT subscription_tier FROM users WHERE id = ${userId}`;
   const tier = user?.subscription_tier || 'free';
-  if (tier !== 'agency' && tier !== 'studio') {
+  if (tier !== 'studio' && tier !== 'agency') {
     return res.status(403).json({
-      error: 'Agency Access Required',
-      details: 'Report Exporting is an Agency plan feature. Upgrade to unlock full DNA dossiers.'
+      error: 'Studio Access Required',
+      details: 'Report Exporting is a Studio plan feature. Upgrade to unlock full DNA dossiers.'
     });
   }
 
@@ -1418,10 +1418,10 @@ app.post('/api/team/invite', async (req, res) => {
 
   const [user] = await sql`SELECT subscription_tier FROM users WHERE id = ${userId}`;
   const tier = user?.subscription_tier || 'free';
-  if (tier !== 'agency') {
+  if (tier !== 'studio' && tier !== 'agency') {
     return res.status(403).json({
-      error: 'Agency Access Required',
-      details: 'Team Members is an Agency plan feature. Upgrade to collaborate with your team.'
+      error: 'Studio Access Required',
+      details: 'Team Members is a Studio plan feature. Upgrade to collaborate with your team.'
     });
   }
 
@@ -1431,7 +1431,7 @@ app.post('/api/team/invite', async (req, res) => {
 
     const [{ count }] = await sql`SELECT count(*)::int FROM team_members WHERE owner_id = ${userId}`;
     if (count >= 5) {
-      return res.status(400).json({ error: 'Maximum 5 team members allowed on the Agency plan.' });
+      return res.status(400).json({ error: 'Maximum 5 team members allowed on the Studio plan.' });
     }
 
 const [existing] = await sql`SELECT id FROM team_members WHERE owner_id = ${userId} AND member_email = ${email}`;
@@ -1539,8 +1539,10 @@ let subscriptionTier = 'founding'; // default to founding
     const nameLower = (product_name || '').toLowerCase();
     const permalinkLower = (product_permalink || '').toLowerCase();
 
-    if (nameLower.includes('agency') || permalinkLower.includes('agency')) {
-      subscriptionTier = 'agency';
+    if (nameLower.includes('studio') || permalinkLower.includes('studio') || nameLower.includes('agency') || permalinkLower.includes('agency')) {
+      subscriptionTier = 'studio';
+    } else if (nameLower.includes('creator') || permalinkLower.includes('creator')) {
+      subscriptionTier = 'creator';
     }
 
 await sql`

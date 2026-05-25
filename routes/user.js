@@ -46,8 +46,8 @@ router.get('/me', async (req, res) => {
         id: userId,
         name: 'Elite Master Admin',
         email: 'admin@eixora.ai',
-        plan_type: 'agency',
-        subscription_tier: 'agency',
+        plan_type: 'studio',
+        subscription_tier: 'studio',
         is_admin: true,
         is_master_admin: true,
         credits_remaining: 999999,
@@ -91,10 +91,12 @@ router.get('/me', async (req, res) => {
 
     // ADMIN BYPASS: Always give owner accounts the top tier plan
     let effectiveTier = user.subscriptionTier;
+    // Normalize legacy 'agency' tier to 'studio'
+    if (effectiveTier === 'agency') effectiveTier = 'studio';
     const adminEmails = ['deamirclothingstores@gmail.com', 'hello@eixora.store', 'admin@eixora.ai'];
     const currentEmail = email || user.email;
     if (currentEmail && adminEmails.includes(currentEmail.toLowerCase())) {
-        effectiveTier = 'agency';
+        effectiveTier = 'studio';
     }
 
     res.json({
@@ -181,7 +183,7 @@ router.get('/plan-check', async (req, res) => {
       free: { scans_per_month: 3, scripts_per_month: 3, batch: false, export: false, team: false },
       creator: { scans_per_month: 30, scripts_per_month: 30, batch: false, export: false, team: false },
       studio: { scans_per_month: 250, scripts_per_month: 250, batch: true, export: true, team: true },
-      agency: { scans_per_month: 250, scripts_per_month: 250, batch: true, export: true, team: true },
+      agency: { scans_per_month: 250, scripts_per_month: 250, batch: true, export: true, team: true }, // Legacy
     };
 
     const oneMonthAgo = new Date();
