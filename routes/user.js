@@ -1,118 +1,54 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
-const { sql } = require('../db/index');
 const prisma = require('../db/prisma');
 const { resolveInternalId } = require('../utils/userResolver');
 
 const router = express.Router();
 
-router.post('/auth/register', async (req, res) => {
-  const { email, password, name } = req.body;
-
-  if (!email || !password) {
-    return res.status(400).json({ error: 'Email and password are required' });
-  }
-
-  try {
-    const [existing] = await sql`SELECT * FROM users WHERE email = ${email}`;
-    if (existing) {
-      return res.status(400).json({ error: 'User already exists' });
-    }
-
-    const hashedPassword = await bcrypt.hash(password, 10);
-
-    const [newUser] = await sql`
-      INSERT INTO users (email, password, name, created_at)
-      VALUES (${email}, ${hashedPassword}, ${name || null}, ${new Date()})
-      RETURNING id, email, name
-    `;
-
-    res.status(201).json({ message: 'User created successfully', user: newUser });
-  } catch (err) {
-
-    res.status(500).json({ error: 'Failed to create user' });
-  }
-});
+// Simple plan limits
+const PLAN_LIMITS = { free: 3, creator: 30, studio: 250, agency: 250, founding: 30 };
 
 router.get('/me', async (req, res) => {
   let userId = req.query.userId;
   const { email, name } = req.query;
+
   userId = await resolveInternalId(userId, { email, name });
-  
-  // If resolveInternalId failed but we have an email, try direct email lookup
-  if (!userId && email) {
-    try {
-      const [emailUser] = await sql`SELECT id FROM users WHERE LOWER(email) = LOWER(${email})`;
-      if (emailUser) userId = emailUser.id;
-    } catch (e) {}
-  }
-  
   if (!userId) return res.status(404).json({ error: 'User not found' });
 
   try {
-    if (userId === '00000000-0000-0000-0000-000000000000') {
-      return res.json({
-        id: userId,
-        name: 'Elite Master Admin',
-        email: 'admin@eixora.ai',
-        plan_type: 'studio',
-        subscription_tier: 'studio',
-        is_admin: true,
-        is_master_admin: true,
-        credits_remaining: 999999,
-        monthly_usage: { scans: 0, scripts: 0 }
-      });
-    }
-
-    const [user] = await sql`
-      SELECT 
-        id, 
-        name, 
-        email, 
-        image, 
-        subscription_tier as "subscriptionTier", 
-        credits_remaining as "creditsRemaining", 
-        total_scripts as "totalScripts", 
-        total_pins as "totalPins", 
-        total_videos_analyzed as "totalVideosAnalyzed", 
-        onboarding_completed as "onboardingCompleted", 
-        brand_niche as "brandNiche", 
-        primary_goal as "primaryGoal", 
-        created_at as "createdAt"
-      FROM users 
-      WHERE id = ${userId}
-    `;
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        image: true,
+        subscriptionTier: true,
+        creditsRemaining: true,
+        totalScripts: true,
+        totalPins: true,
+        totalVideosAnalyzed: true,
+        onboardingCompleted: true,
+        brandNiche: true,
+        primaryGoal: true,
+        createdAt: true,
+      }
+    });
 
     if (!user) return res.status(404).json({ error: 'User not found' });
 
-    const oneMonthAgo = new Date();
-    oneMonthAgo.setDate(oneMonthAgo.getDate() - 30);
-
-    const [{ scriptCount }] = await sql`
-      SELECT count(*)::int as "scriptCount" FROM scripts 
-      WHERE user_id = ${userId} AND created_at > ${oneMonthAgo}
-    `;
-
-    let scanCount = 0;
-    try {
-      const [{ scanCount: sc }] = await sql`
-        SELECT count(*)::int as "scanCount" FROM scan_events
-        WHERE user_id = ${userId} AND created_at > ${oneMonthAgo}
-      `;
-      scanCount = sc || 0;
-    } catch (e) {
-      // scan_events table might not exist yet — fall back to total_videos_analyzed
-      scanCount = user.totalVideosAnalyzed || 0;
-    }
-
-    // Normalize legacy 'agency' tier to 'studio'
-    let effectiveTier = user.subscriptionTier;
-    if (effectiveTier === 'agency') effectiveTier = 'studio';
+    // Normalize tier
+    let tier = user.subscriptionTier || 'free';
+    if (tier === 'agency') tier = 'studio';
+    if (tier === 'founding') tier = 'creator';
 
     res.json({
-      ...user,
-      plan_type: effectiveTier,
-      subscription_tier: effectiveTier,
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      image: user.image,
+      plan_type: tier,
+      subscription_tier: tier,
       credits_remaining: user.creditsRemaining,
       total_scripts: user.totalScripts,
       total_pins: user.totalPins,
@@ -122,12 +58,12 @@ router.get('/me', async (req, res) => {
       primary_goal: user.primaryGoal,
       created_at: user.createdAt,
       monthly_usage: {
-        scans: scanCount || 0,
-        scripts: scriptCount
+        scans: user.totalVideosAnalyzed || 0,
+        scripts: user.totalScripts || 0
       }
     });
   } catch (err) {
-    console.error('[/me] Error fetching profile:', err.message);
+    console.error('[/me] Error:', err.message);
     res.status(500).json({ error: 'Failed to fetch profile' });
   }
 });
@@ -149,30 +85,25 @@ router.patch('/me', async (req, res) => {
         primaryGoal: primary_goal !== undefined ? primary_goal : undefined,
       },
       select: {
-        id: true,
-        name: true,
-        email: true,
-        image: true,
-        subscriptionTier: true,
-        creditsRemaining: true,
-        totalScripts: true,
-        totalPins: true,
-        onboardingCompleted: true,
-        brandNiche: true,
-        primaryGoal: true
+        id: true, name: true, email: true, image: true,
+        subscriptionTier: true, creditsRemaining: true,
+        totalScripts: true, totalPins: true,
+        onboardingCompleted: true, brandNiche: true, primaryGoal: true
       }
     });
 
+    let tier = updatedUser.subscriptionTier || 'free';
+    if (tier === 'agency') tier = 'studio';
+
     res.json({
       ...updatedUser,
-      plan_type: updatedUser.subscriptionTier,
-      subscription_tier: updatedUser.subscriptionTier,
+      plan_type: tier,
+      subscription_tier: tier,
       onboarding_completed: updatedUser.onboardingCompleted,
       brand_niche: updatedUser.brandNiche,
       primary_goal: updatedUser.primaryGoal
     });
   } catch (err) {
-
     res.status(500).json({ error: 'Failed to update profile' });
   }
 });
@@ -185,48 +116,52 @@ router.get('/plan-check', async (req, res) => {
   if (!userId) return res.status(404).json({ error: 'User not found' });
 
   try {
-    const [user] = await sql`SELECT subscription_tier, subscription_status FROM users WHERE id = ${userId}`;
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { subscriptionTier: true, totalVideosAnalyzed: true, totalScripts: true }
+    });
+
     if (!user) return res.status(404).json({ error: 'User not found' });
 
-    const tier = user.subscription_tier || 'free';
-    const limits = {
-      free: { scans_per_month: 3, scripts_per_month: 3, batch: false, export: false, team: false },
-      creator: { scans_per_month: 30, scripts_per_month: 30, batch: false, export: false, team: false },
-      studio: { scans_per_month: 250, scripts_per_month: 250, batch: true, export: true, team: true },
-      agency: { scans_per_month: 250, scripts_per_month: 250, batch: true, export: true, team: true }, // Legacy
-    };
+    let tier = user.subscriptionTier || 'free';
+    if (tier === 'agency') tier = 'studio';
 
-    const oneMonthAgo = new Date();
-    oneMonthAgo.setDate(oneMonthAgo.getDate() - 30);
-
-    let scanCount = 0;
-    try {
-      const [{ scanCount: sc }] = await sql`
-        SELECT count(*)::int as "scanCount" FROM scan_events 
-        WHERE user_id = ${userId} AND created_at > ${oneMonthAgo}
-      `;
-      scanCount = sc || 0;
-    } catch (e) {
-      scanCount = 0;
-    }
-
-    const [{ scriptCount }] = await sql`
-      SELECT count(*)::int as "scriptCount" FROM scripts 
-      WHERE user_id = ${userId} AND created_at > ${oneMonthAgo}
-    `;
+    const limit = PLAN_LIMITS[tier] ?? 3;
 
     res.json({
       tier,
-      status: user.subscription_status || 'inactive',
-      limits: limits[tier] || limits.free,
+      limits: {
+        scans_per_month: limit,
+        scripts_per_month: limit,
+        batch: tier === 'studio',
+        export: tier === 'studio',
+      },
       usage: {
-        scans: scanCount,
-        scripts: scriptCount
+        scans: user.totalVideosAnalyzed || 0,
+        scripts: user.totalScripts || 0
       }
     });
   } catch (err) {
-
     res.status(500).json({ error: 'Plan check failed' });
+  }
+});
+
+router.post('/auth/register', async (req, res) => {
+  const { email, password, name } = req.body;
+  if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
+
+  try {
+    const existing = await prisma.user.findUnique({ where: { email } });
+    if (existing) return res.status(400).json({ error: 'User already exists' });
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const newUser = await prisma.user.create({
+      data: { email, password: hashedPassword, name: name || null }
+    });
+
+    res.status(201).json({ message: 'User created', user: { id: newUser.id, email: newUser.email } });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to create user' });
   }
 });
 

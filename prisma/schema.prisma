@@ -19,6 +19,7 @@ model User {
   image               String?
   password            String?
   subscriptionTier    String?          @default("free") @map("subscription_tier")
+  subscriptionStatus  String?          @default("inactive") @map("subscription_status")
   creditsRemaining    Int?             @default(10) @map("credits_remaining")
   totalScripts        Int?             @default(0) @map("total_scripts")
   totalPins           Int?             @default(0) @map("total_pins")
@@ -133,4 +134,13 @@ model LoungeSession {
   user      User?     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("lounge_sessions")
+}
+
+model ScanEvent {
+  id        Int      @id @default(autoincrement())
+  userId    String   @map("user_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([userId, createdAt])
+  @@map("scan_events")
 }
