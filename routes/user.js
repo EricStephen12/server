@@ -69,7 +69,7 @@ router.get('/me', async (req, res) => {
 });
 
 router.patch('/me', async (req, res) => {
-  let { userId, name, onboarding_completed, brand_niche, primary_goal } = req.body;
+  let { userId, name, onboarding_completed, brand_niche, primary_goal, source } = req.body;
   if (!userId) return res.status(400).json({ error: 'User ID required' });
 
   userId = await resolveInternalId(userId);
@@ -83,12 +83,13 @@ router.patch('/me', async (req, res) => {
         onboardingCompleted: onboarding_completed !== undefined ? onboarding_completed : undefined,
         brandNiche: brand_niche !== undefined ? brand_niche : undefined,
         primaryGoal: primary_goal !== undefined ? primary_goal : undefined,
+        source: source !== undefined ? source : undefined,
       },
       select: {
         id: true, name: true, email: true, image: true,
         subscriptionTier: true, creditsRemaining: true,
         totalScripts: true, totalPins: true,
-        onboardingCompleted: true, brandNiche: true, primaryGoal: true
+        onboardingCompleted: true, brandNiche: true, primaryGoal: true, source: true
       }
     });
 

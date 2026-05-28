@@ -43,6 +43,9 @@ router.get('/users', async (req, res) => {
                 name, 
                 subscription_tier as plan_type, 
                 total_videos_analyzed as scans,
+                brand_niche,
+                primary_goal,
+                source,
                 created_at
             FROM users
             ORDER BY created_at DESC

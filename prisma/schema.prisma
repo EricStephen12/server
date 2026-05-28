@@ -26,6 +26,7 @@ model User {
   onboardingCompleted Boolean          @default(false) @map("onboarding_completed")
   brandNiche          String?          @map("brand_niche")
   primaryGoal         String?          @map("primary_goal")
+  source              String?
   totalVideosAnalyzed Int?             @default(0) @map("total_videos_analyzed")
   createdAt           DateTime?        @default(now()) @map("created_at")
   
