@@ -16,13 +16,15 @@ async function resolveInternalId(id, clerkInfo = null) {
       
       // If this clerk row is missing email but we have it now, check for a duplicate email row
       if (email && !user.email) {
-        // Check if there's another row with this email that has a better subscription tier
+        // Check if there's another row with this email
         const [emailRow] = await sql`SELECT id, subscription_tier FROM users WHERE LOWER(email) = LOWER(${email}) AND id != ${user.id}`;
         
-        if (emailRow && emailRow.subscription_tier !== 'free') {
-          // Merge: update the clerk row with the email row's tier, then delete the email row
-          await sql`UPDATE users SET email = ${email}, name = COALESCE(${name}, name), subscription_tier = ${emailRow.subscription_tier} WHERE id = ${user.id}`;
+        if (emailRow) {
+          const targetTier = emailRow.subscription_tier !== 'free' ? emailRow.subscription_tier : user.subscription_tier;
+          // Delete the duplicate email row first to free up the unique constraint
           await sql`DELETE FROM users WHERE id = ${emailRow.id}`;
+          // Update the clerk row with the email, name, and tier
+          await sql`UPDATE users SET email = ${email}, name = COALESCE(${name}, name), subscription_tier = ${targetTier} WHERE id = ${user.id}`;
         } else {
           // Just backfill the email/name on the clerk row
           await sql`UPDATE users SET email = ${email}, name = COALESCE(${name}, name) WHERE id = ${user.id}`;
@@ -52,7 +54,7 @@ async function resolveInternalId(id, clerkInfo = null) {
     `;
     return newUser.id;
   } catch (err) {
-
+    console.error('Error in resolveInternalId:', err);
     return null;
   }
 }
