@@ -274,15 +274,25 @@ async function extractFrames(videoUrl, manualTimestamps = null) {
 
 
 
-        const audioPath = path.join(tempDir, `audio_${videoId}.mp3`);
+        let audioPath = path.join(tempDir, `audio_${videoId}.mp3`);
 
-        await new Promise((resolve, reject) => {
-            ffmpeg(videoPath)
-                .toFormat('mp3')
-                .on('end', resolve)
-                .on('error', reject)
-                .save(audioPath);
-        });
+        try {
+            await new Promise((resolve, reject) => {
+                ffmpeg(videoPath)
+                    .noVideo()
+                    .toFormat('mp3')
+                    .on('end', resolve)
+                    .on('error', reject)
+                    .save(audioPath);
+            });
+        } catch (audioErr) {
+            console.warn(`Audio extraction failed (video may be silent): ${audioErr.message}`);
+            // If the file was partially created, delete it
+            if (fs.existsSync(audioPath)) {
+                try { fs.unlinkSync(audioPath); } catch (_) {}
+            }
+            audioPath = null;
+        }
 
 
         if (fs.existsSync(videoPath)) fs.unlinkSync(videoPath);

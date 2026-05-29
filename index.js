@@ -553,6 +553,9 @@ const [user] = await sql`SELECT subscription_tier FROM users WHERE id = ${userId
 
 
 app.post('/api/analyze-video', requireAuth, requireOwnership, scanLimiter, upload.single('video'), async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: 'No video file uploaded or file type is not supported' });
+  }
   let userId = req.body.userId;
   if (!userId) return res.status(400).json({ error: 'User ID required' });
 
@@ -1324,7 +1327,83 @@ const formattedSessions = sessions.map(s => ({
 
 res.json(formattedSessions);
   } catch (error) {
+    res.status(500).json({ error: 'Failed' });
+  }
+});
 
+app.post('/api/generate-final-script', requireAuth, requireOwnership, async (req, res) => {
+  let { messages, dna, userId } = req.body;
+  if (!userId) return res.status(400).json({ error: 'User ID required' });
+
+  userId = await resolveInternalId(userId);
+  if (!userId) return res.status(404).json({ error: 'User resolution failed' });
+
+  if (!groq) return res.status(503).json({ error: 'AI service not available' });
+
+  try {
+    const finalPrompt = `AS THE ELITE CREATIVE DIRECTOR & DIRECT-RESPONSE MEDIA BUYER, SYNTHESIZE THIS MASTERMIND SESSION INTO A PRODUCTION GUIDE.
+    
+    ORIGINAL DNA:
+  - Awareness Level: ${dna.awareness_level || dna.niche || 'General'}
+  - Big Idea: ${dna.big_idea || 'Not identified'}
+  - Hook Verdict: ${dna.hook_verdict?.what_stops_the_scroll || dna.hook_analysis?.critique || 'No hook data'}
+  - Fatal Flaw: ${dna.fatal_flaw || 'None identified'}
+  - Steal-Worthy: ${dna.steal_worthy || 'None identified'}
+  - Secret Sauce: ${dna.the_secret_sauce || 'Not identified'}
+    
+    CHAT CONTEXT (THE USER PREFERENCES):
+  ${messages.map(m => `${m.role.toUpperCase()}: ${m.content}`).join('\n')}
+    
+    INSTRUCTIONS FOR NATIVE UGC HOOKS (DO NOT USE GENERIC TRANSFORMATION FORMULAS):
+    1. DO NOT fall into the generic "before/after" commercial trap (e.g., "Tired? Try this supplement!"). Highly polished, dramatized commercials look like ads and get skipped instantly on TikTok/Reels.
+    2. The first shot (0-3s) must be native, unskippable, and UGC-raw.
+    3. Anchor the script's hook (0-3s) using ONE of these 3 high-converting UGC frameworks, whichever fits the product/niche best:
+       - **The Counter-Intuitive Callout**: Visual showing the product container being unboxed aggressively or thrown into a bag. Overlay text: "Stop taking [generic/competitor category product] for [core problem]. Do this instead."
+       - **The "Stitch/Reply" Format**: Visual of a green-screen background of a real/skeptical customer comment (e.g., "Bet this tastes like grass and does nothing lol"), with the creator taking a sip/capsule, making a shocked/impressed face, and immediately showing the texture of the product.
+       - **The "Day in the Life" Integration**: Visual of the creator casually doing their morning routine (making coffee, getting dressed), keeping visual pacing casual, while the voiceover drops a heavy hook about the core problem/cognitive fog.
+    
+    4. Replicate the psychological energy of the original DNA but adapt for the new product using the chat context.
+    5. The script must be high-AOV, high-RECOUP focused.
+    
+    Output JSON only:
+{
+  "title": "Viral Script Name",
+  "concept": "Brief concept summary",
+  "awareness_level": "${dna.awareness_level || dna.niche || 'General'}",
+  "big_idea": "Synthesis of the chat + DNA",
+  "shot_list": [
+    { "time": "0-3s", "visual": "UGC framework hook visual description...", "audio": "Native hook voiceover/sound...", "overlay": "On-screen hook text overlay..." },
+    { "time": "3-8s", "visual": "...", "audio": "...", "overlay": "..." },
+    { "time": "8-15s", "visual": "...", "audio": "...", "overlay": "..." },
+    { "time": "15s+", "visual": "...", "audio": "...", "overlay": "..." }
+  ]
+} `;
+
+    const completion = await groq.chat.completions.create({
+      messages: [{ role: "user", content: finalPrompt }],
+      model: "llama-3.3-70b-versatile",
+      response_format: { type: "json_object" },
+    }, { timeout: 60000 });
+
+    const script = JSON.parse(completion.choices[0]?.message?.content || '{}');
+
+if (sql && userId) {
+
+      const [newScript] = await sql`
+        INSERT INTO scripts(user_id, title, script_content)
+VALUES(${userId}, ${script.title}, ${JSON.stringify(script)})
+RETURNING *
+  `;
+
+await sql`
+        UPDATE users
+        SET total_scripts = total_scripts + 1
+        WHERE id = ${userId}
+`;
+    }
+
+    res.json(script);
+  } catch (error) {
     res.status(500).json({ error: 'Failed' });
   }
 });
@@ -1356,15 +1435,14 @@ app.delete('/api/lounge-session/:id', requireAuth, async (req, res) => {
     await sql`DELETE FROM lounge_sessions WHERE id = ${sessionId}`;
     res.json({ success: true, message: 'Session deleted successfully' });
   } catch (error) {
-
     res.status(500).json({ error: 'Failed to delete session' });
   }
 });
 
-
-app.post('/api/generate-final-script', requireAuth, requireOwnership, async (req, res) => {
-  let { messages, dna, userId } = req.body;
+app.post('/api/generate-hook-variations', requireAuth, requireOwnership, async (req, res) => {
+  let { brief, userId } = req.body;
   if (!userId) return res.status(400).json({ error: 'User ID required' });
+  if (!brief) return res.status(400).json({ error: 'Brief data required' });
 
   userId = await resolveInternalId(userId);
   if (!userId) return res.status(404).json({ error: 'User resolution failed' });
@@ -1372,65 +1450,57 @@ app.post('/api/generate-final-script', requireAuth, requireOwnership, async (req
   if (!groq) return res.status(503).json({ error: 'AI service not available' });
 
   try {
-    const finalPrompt = `AS THE ELITE CREATIVE DIRECTOR, SYNTHESIZE THIS MASTERMIND SESSION INTO A PRODUCTION GUIDE.
+    const prompt = `AS AN ELITE CREATIVE DIRECTOR & DIRECT-RESPONSE MEDIA BUYER, generate 3 alternative hook variations for the following video script/concept. 
     
-    ORIGINAL DNA:
-  - Awareness Level: ${dna.awareness_level || dna.niche || 'General'}
-- Big Idea: ${dna.big_idea || 'Not identified'}
-- Hook Verdict: ${dna.hook_verdict?.what_stops_the_scroll || dna.hook_analysis?.critique || 'No hook data'}
-- Fatal Flaw: ${dna.fatal_flaw || 'None identified'}
-- Steal-Worthy: ${dna.steal_worthy || 'None identified'}
-- Secret Sauce: ${dna.the_secret_sauce || 'Not identified'}
-    
-    CHAT CONTEXT(THE USER PREFERENCES):
-  ${messages.map(m => `${m.role.toUpperCase()}: ${m.content}`).join('\n')}
-    
-    INSTRUCTION:
-  - Create an Agency - Grade Viral Production Guide.
-    - Replicate the psychological energy of the original DNA but adapt for the new product using the chat context.
-    - The script must be high - AOV, high - RECOUP focused.
-    
-    Output JSON only:
-{
-  "title": "Viral Script Name",
-    "concept": "Brief concept summary",
-      "awareness_level": "${dna.awareness_level || dna.niche || 'General'}",
-        "big_idea": "Synthesis of the chat + DNA",
-          "shot_list": [
-            { "time": "0-3s", "visual": "...", "audio": "...", "overlay": "..." },
-            { "time": "3-8s", "visual": "...", "audio": "...", "overlay": "..." },
-            { "time": "8-15s", "visual": "...", "audio": "...", "overlay": "..." },
-            { "time": "15s+", "visual": "...", "audio": "...", "overlay": "..." }
-          ]
-} `;
+    Marketers always test multiple hooks for the same video body to optimize the scroll-stop rate. Your goal is to make these hooks native, unskippable, and highly converting.
+
+    SCRIPT CONCEPT:
+    Title: ${brief.title}
+    Concept: ${brief.concept}
+    Big Idea: ${brief.big_idea}
+
+    For each hook variation, provide:
+    1. **Psychological Trigger Used** (e.g., Fear of Missing Out (FOMO), Negative Visualization, Extreme Benefit / Result-First)
+    2. **Timeframe** (0-3s)
+    3. **Visual Hook**: Exact visual action to film (keep it native, casual, UGC style)
+    4. **Audio Hook / Voiceover**: Exact words spoken
+    5. **Text Overlay**: On-screen copy (acting as a scroll-stopper pattern interrupt)
+
+    Output JSON format only:
+    {
+      "variations": [
+        {
+          "trigger": "Fear of Missing Out (FOMO)",
+          "visual": "...",
+          "audio": "...",
+          "overlay": "..."
+        },
+        {
+          "trigger": "Negative Visualization",
+          "visual": "...",
+          "audio": "...",
+          "overlay": "..."
+        },
+        {
+          "trigger": "Extreme Benefit / Result-First",
+          "visual": "...",
+          "audio": "...",
+          "overlay": "..."
+        }
+      ]
+    }`;
 
     const completion = await groq.chat.completions.create({
-      messages: [{ role: "user", content: finalPrompt }],
+      messages: [{ role: "user", content: prompt }],
       model: "llama-3.3-70b-versatile",
       response_format: { type: "json_object" },
     }, { timeout: 60000 });
 
-    const script = JSON.parse(completion.choices[0]?.message?.content || '{}');
-
-if (sql && userId) {
-
-      const [newScript] = await sql`
-        INSERT INTO scripts(user_id, title, script_content)
-VALUES(${userId}, ${script.title}, ${JSON.stringify(script)})
-RETURNING *
-  `;
-
-await sql`
-        UPDATE users
-        SET total_scripts = total_scripts + 1
-        WHERE id = ${userId}
-`;
-    }
-
-    res.json(script);
+    const result = JSON.parse(completion.choices[0]?.message?.content || '{}');
+    res.json(result);
   } catch (error) {
-
-    res.status(500).json({ error: 'Failed' });
+    console.error('Error generating hook variations:', error);
+    res.status(500).json({ error: 'Failed to generate hook variations' });
   }
 });
 
