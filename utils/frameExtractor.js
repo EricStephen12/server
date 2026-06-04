@@ -197,6 +197,10 @@ async function extractFrames(videoUrl, manualTimestamps = null) {
         const metadata = await getMetadata(videoPath);
         const duration = metadata.format.duration || 30;
 
+        if (duration > 300) {
+            throw new Error(`Video is too long (${Math.round(duration)} seconds). Maximum allowed length is 5 minutes (300 seconds).`);
+        }
+
 
         let timestamps = manualTimestamps;
         if (!timestamps) {
