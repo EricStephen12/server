@@ -9,6 +9,34 @@ const router = express.Router();
 const PLAN_LIMITS = { free: 3, creator: 30, studio: 250, agency: 250, founding: 30 };
 
 router.get('/me', async (req, res) => {
+  // Check if it's the custom JWT master admin token
+  const authHeader = req.headers.authorization;
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    const token = authHeader.split(' ')[1];
+    try {
+      const jwt = require('jsonwebtoken');
+      const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback_secret_66723');
+      if (decoded && decoded.role === 'master_admin') {
+        return res.json({
+          id: '00000000-0000-0000-0000-000000000000',
+          name: 'Elite Master Admin',
+          email: 'hello@eixora.store',
+          is_admin: true,
+          is_master_admin: true,
+          plan_type: 'studio',
+          subscription_tier: 'studio',
+          credits_remaining: 99999,
+          total_scripts: 0,
+          total_pins: 0,
+          total_videos_analyzed: 0,
+          onboarding_completed: true
+        });
+      }
+    } catch (err) {
+      // Ignore and proceed
+    }
+  }
+
   let userId = req.query.userId;
   const { email, name } = req.query;
 
@@ -42,6 +70,9 @@ router.get('/me', async (req, res) => {
     if (tier === 'agency') tier = 'studio';
     if (tier === 'founding') tier = 'creator';
 
+    const ADMIN_EMAILS = ['deamirclothingstores@gmail.com', 'hello@eixora.store'];
+    const userIsAdmin = ADMIN_EMAILS.includes((user.email || '').toLowerCase());
+
     res.json({
       id: user.id,
       name: user.name,
@@ -57,6 +88,7 @@ router.get('/me', async (req, res) => {
       brand_niche: user.brandNiche,
       primary_goal: user.primaryGoal,
       created_at: user.createdAt,
+      is_admin: userIsAdmin,
       monthly_usage: {
         scans: user.totalVideosAnalyzed || 0,
         scripts: user.totalScripts || 0

@@ -1739,12 +1739,24 @@ await sql`
           VALUES (
             '00000000-0000-0000-0000-000000000000', 
             'Elite Master Admin', 
-            'admin@eixora.ai', 
+            'hello@eixora.store', 
             TRUE, 
             'studio', 
             NOW()
           )
           ON CONFLICT (id) DO NOTHING
+        `;
+
+        await sql`
+          UPDATE users 
+          SET is_admin = TRUE 
+          WHERE LOWER(email) = LOWER('hello@eixora.store')
+        `;
+
+        await sql`
+          UPDATE users 
+          SET is_admin = TRUE 
+          WHERE LOWER(email) = LOWER('deamirclothingstores@gmail.com')
         `;
 
       } catch (dbErr) {

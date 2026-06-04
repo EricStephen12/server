@@ -33,7 +33,7 @@ router.post('/login', (req, res) => {
         }
 
 
-        res.status(401).json({ error: 'Invalid Elite Access Key.' });
+        res.status(401).json({ error: 'Invalid Password.' });
     } catch (err) {
 
         res.status(500).json({ error: 'Internal Server Error', details: err.message });

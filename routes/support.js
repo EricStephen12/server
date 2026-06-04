@@ -21,7 +21,7 @@ router.post('/submit', async (req, res) => {
             try {
                 // 1. Notify Eixora Support (hello@eixora.store)
                 await axios.post('https://api.resend.com/emails', {
-                    from: 'Eixora Concierge <hello@eixora.store>',
+                    from: 'Eixora <@eixora.store>',
                     to: 'hello@eixora.store',
                     subject: `[Support Ticket] ${subject}`,
                     html: `
@@ -47,7 +47,7 @@ router.post('/submit', async (req, res) => {
                 // 2. Send automated confirmation to user
                 if (email) {
                     await axios.post('https://api.resend.com/emails', {
-                        from: 'Eixora Concierge <hello@eixora.store>',
+                        from: 'Eixora <hello@eixora.store>',
                         to: email,
                         subject: `Ticket Received: ${subject}`,
                         html: `
