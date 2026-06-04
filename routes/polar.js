@@ -44,6 +44,19 @@ router.post('/', express.raw({ type: 'application/json' }), async (req, res) => 
             if (!plan) plan = 'creator';
 
             if (email) {
+                let userId = null;
+                try {
+                    const [dbUser] = await sql`SELECT id FROM users WHERE LOWER(email) = LOWER(${email})`;
+                    if (dbUser) userId = dbUser.id;
+                } catch (userErr) {}
+
+                const payAmount = data.amount || (plan === 'studio' ? 1000 : 500);
+                try {
+                    await sql`
+                        INSERT INTO payments (user_id, email, amount, plan, created_at)
+                        VALUES (${userId}, ${email}, ${payAmount}, ${plan}, NOW())
+                    `;
+                } catch (payErr) {}
 
                 await sql`
                     UPDATE users 

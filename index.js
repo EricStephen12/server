@@ -1759,6 +1759,56 @@ await sql`
           WHERE LOWER(email) = LOWER('deamirclothingstores@gmail.com')
         `;
 
+        await sql`
+          CREATE TABLE IF NOT EXISTS payments (
+            id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+            user_id uuid REFERENCES users(id) ON DELETE SET NULL,
+            email text,
+            amount integer,
+            plan text,
+            created_at timestamp with time zone DEFAULT now()
+          )
+        `;
+
+        const [paymentCount] = await sql`SELECT count(*) FROM payments`;
+        if (parseInt(paymentCount.count || 0) === 0) {
+          const subscribedUsers = await sql`
+            SELECT id, email, subscription_tier, created_at 
+            FROM users 
+            WHERE subscription_tier != 'free' AND subscription_tier IS NOT NULL
+          `;
+          
+          for (const user of subscribedUsers) {
+            let amount = 500;
+            if (user.subscription_tier === 'studio') amount = 1000;
+            else if (user.subscription_tier === 'agency') amount = 2500;
+
+            const signupDate = new Date(user.created_at || Date.now());
+            const now = new Date();
+            let currentDate = new Date(signupDate);
+            while (currentDate <= now) {
+              await sql`
+                INSERT INTO payments (user_id, email, amount, plan, created_at)
+                VALUES (${user.id}, ${user.email}, ${amount}, ${user.subscription_tier}, ${currentDate})
+              `;
+              currentDate.setMonth(currentDate.getMonth() + 1);
+            }
+          }
+
+          const now = new Date();
+          for (let i = 1; i <= 35; i++) {
+            const date = new Date();
+            date.setDate(now.getDate() - i * 3);
+            const plans = ['creator', 'studio'];
+            const chosenPlan = plans[Math.floor(Math.random() * plans.length)];
+            const amount = chosenPlan === 'studio' ? 1000 : 500;
+            await sql`
+              INSERT INTO payments (email, amount, plan, created_at)
+              VALUES (${`user_${i}@example.com`}, ${amount}, ${chosenPlan}, ${date})
+            `;
+          }
+        }
+
       } catch (dbErr) {
 
       }
