@@ -552,6 +552,91 @@ const [user] = await sql`SELECT subscription_tier FROM users WHERE id = ${userId
 
 
 
+async function runBackgroundAnalysis(sessionId, videoUrlOrPath, userId, type, originalFilepath, originalUrl) {
+  const fs = require('fs');
+  try {
+    await enqueueVideoJob(async () => {
+      const { frames, audioPath } = await extractFrames(videoUrlOrPath);
+
+      if (!frames || frames.length === 0) {
+        throw new Error('No frames could be extracted from this video.');
+      }
+
+      let transcript = "";
+      let music = null;
+      if (audioPath) {
+        try { music = await identifyMusic(audioPath); } catch (err) { console.error('Music identification failed:', err.message); }
+        try { transcript = await transcribeAudio(audioPath); } catch (err) { console.error('Transcription failed:', err.message); }
+      }
+
+      const analysis = await analyzeVideoFrames(
+        frames,
+        type === 'upload' ? 'Uploaded Draft Analysis' : 'URL Analysis',
+        transcript,
+        music
+      );
+
+      if (userId) {
+        try {
+          await sql`UPDATE users SET total_videos_analyzed = total_videos_analyzed + 1 WHERE id = ${userId}`;
+          await sql`INSERT INTO scan_events (user_id, created_at) VALUES (${userId}, NOW())`;
+        } catch (err) {
+          console.error('Failed to update user stats in background:', err.message);
+        }
+      }
+
+      try {
+        await sql`
+          INSERT INTO ad_benchmarks (user_id, video_url, niche, hook_power, retention_score, conversion_trigger,
+            awareness_level, style, primary_trigger, transcript_length)
+          VALUES (${userId || null}, ${originalUrl || null}, ${analysis.niche || 'General'},
+            ${analysis.metrics?.hook_power || 0}, ${analysis.metrics?.retention_score || 0},
+            ${analysis.metrics?.conversion_trigger || 0}, ${analysis.awareness_level || null},
+            ${analysis.vibe_assessment?.style || null}, ${analysis.psychology_breakdown?.primary_trigger || null},
+            ${transcript?.length || 0})
+        `;
+      } catch (e) {
+        console.error('Failed to insert benchmarks in background:', e.message);
+      }
+
+      // If it's a URL analysis, cache the successful result
+      if (type === 'url') {
+        const resultPayload = { analysis, framesAnalyzed: frames.length, hasAudio: !!transcript };
+        await setCachedAnalysis(videoUrlOrPath, resultPayload);
+      }
+
+      // Update the lounge session to complete state
+      const cleanTitle = `Analysis: ${(originalUrl || videoUrlOrPath).substring(0, 30)}...`;
+      await sql`
+        UPDATE lounge_sessions
+        SET dna = ${JSON.stringify(analysis)}, title = ${cleanTitle}, updated_at = NOW()
+        WHERE id = ${sessionId}
+      `;
+
+      // Cleanup files if uploaded
+      if (type === 'upload' && originalFilepath && fs.existsSync(originalFilepath)) {
+        try { fs.unlinkSync(originalFilepath); } catch (err) { console.error('Failed to delete upload file:', err.message); }
+      }
+    });
+  } catch (error) {
+    console.error(`Background analysis failed for session ${sessionId}:`, error.message);
+    const failedDna = { status: 'failed', error: error.message || 'Unknown processing error' };
+    try {
+      await sql`
+        UPDATE lounge_sessions
+        SET dna = ${JSON.stringify(failedDna)}, updated_at = NOW()
+        WHERE id = ${sessionId}
+      `;
+    } catch (dbErr) {
+      console.error('Failed to record job failure in database:', dbErr.message);
+    }
+    // Cleanup files if uploaded
+    if (type === 'upload' && originalFilepath && fs.existsSync(originalFilepath)) {
+      try { fs.unlinkSync(originalFilepath); } catch (err) { console.error('Failed to delete upload file:', err.message); }
+    }
+  }
+}
+
 app.post('/api/analyze-video', requireAuth, requireOwnership, scanLimiter, upload.single('video'), async (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: 'No video file uploaded or file type is not supported' });
@@ -565,6 +650,11 @@ app.post('/api/analyze-video', requireAuth, requireOwnership, scanLimiter, uploa
   if (userId) {
     const limit = await checkLimits(userId, 'scan');
     if (!limit.allowed) {
+      // Cleanup uploaded file since we're rejecting the request
+      const fs = require('fs');
+      if (req.file.path && fs.existsSync(req.file.path)) {
+        try { fs.unlinkSync(req.file.path); } catch (err) {}
+      }
       return res.status(403).json({
         error: 'Creative License Inactive',
         details: 'You need an active subscription or trial to scan videos. Upgrade now to get started!',
@@ -574,49 +664,27 @@ app.post('/api/analyze-video', requireAuth, requireOwnership, scanLimiter, uploa
   }
 
   try {
-    const result = await enqueueVideoJob(async () => {
-      const { frames, audioPath } = await extractFrames(req.file.path);
+    const videoName = req.file.originalname || 'Uploaded Video';
+    const tempTitle = `Analysis: Processing...`;
+    
+    // Create new lounge session in "processing" state
+    const tempDna = { status: 'processing' };
+    const [session] = await sql`
+      INSERT INTO lounge_sessions(user_id, title, video_url, dna, messages, created_at, updated_at)
+      VALUES(${userId}, ${tempTitle}, ${videoName}, ${JSON.stringify(tempDna)}, '[]', NOW(), NOW())
+      RETURNING id
+    `;
 
-      if (!frames || frames.length === 0) {
-        throw new Error('No frames could be extracted from this video.');
-      }
+    // Trigger the background analysis
+    runBackgroundAnalysis(session.id, req.file.path, userId, 'upload', req.file.path, null);
 
-      let transcript = "";
-      let music = null;
-      if (audioPath) {
-        try { music = await identifyMusic(audioPath); } catch (err) { console.error('Music identification failed:', err.message); }
-        try { transcript = await transcribeAudio(audioPath); } catch (err) { console.error('Transcription failed:', err.message); }
-      }
-
-      const analysis = await analyzeVideoFrames(frames, 'Uploaded Draft Analysis', transcript, music);
-
-      if (userId) {
-        try {
-          await sql`UPDATE users SET total_videos_analyzed = total_videos_analyzed + 1 WHERE id = ${userId}`;
-          await sql`INSERT INTO scan_events (user_id, created_at) VALUES (${userId}, NOW())`;
-        } catch (err) {}
-      }
-
-      try {
-        await sql`
-          INSERT INTO ad_benchmarks (user_id, niche, hook_power, retention_score, conversion_trigger,
-            awareness_level, style, primary_trigger, transcript_length)
-          VALUES (${userId || null}, ${analysis.niche || 'General'},
-            ${analysis.metrics?.hook_power || 0}, ${analysis.metrics?.retention_score || 0},
-            ${analysis.metrics?.conversion_trigger || 0}, ${analysis.awareness_level || null},
-            ${analysis.vibe_assessment?.style || null}, ${analysis.psychology_breakdown?.primary_trigger || null},
-            ${transcript?.length || 0})
-        `;
-      } catch (e) { /* silent */ }
-
-      return { analysis, framesAnalyzed: frames.length, hasAudio: !!transcript };
-    });
-
-    res.json({ success: true, ...result });
-
+    // Return the sessionId immediately
+    res.json({ success: true, sessionId: session.id });
   } catch (error) {
-    if (error.message?.includes('timed out')) {
-      return res.status(503).json({ error: 'Server is busy processing other videos. Please try again in a moment.' });
+    // Cleanup uploaded file on error
+    const fs = require('fs');
+    if (req.file.path && fs.existsSync(req.file.path)) {
+      try { fs.unlinkSync(req.file.path); } catch (err) {}
     }
     res.status(500).json({ error: 'Video audit failed', details: error.message });
   }
@@ -664,57 +732,32 @@ app.post('/api/analyze-video-url', requireAuth, requireOwnership, scanLimiter, a
           await sql`INSERT INTO scan_events (user_id, created_at) VALUES (${userId}, NOW())`;
         } catch (err) {}
       }
-      return res.json({ success: true, ...cached, fromCache: true });
+
+      // Create a completed session immediately
+      const cleanTitle = `Analysis: ${originalUrl.substring(0, 30)}...`;
+      const [session] = await sql`
+        INSERT INTO lounge_sessions(user_id, title, video_url, dna, messages, created_at, updated_at)
+        VALUES(${userId}, ${cleanTitle}, ${originalUrl}, ${JSON.stringify(cached.analysis)}, '[]', NOW(), NOW())
+        RETURNING id
+      `;
+
+      return res.json({ success: true, sessionId: session.id, fromCache: true });
     }
 
-    const result = await enqueueVideoJob(async () => {
-      const { frames, audioPath } = await extractFrames(videoUrl);
+    const tempTitle = `Analysis: Processing...`;
+    const tempDna = { status: 'processing' };
+    const [session] = await sql`
+      INSERT INTO lounge_sessions(user_id, title, video_url, dna, messages, created_at, updated_at)
+      VALUES(${userId}, ${tempTitle}, ${originalUrl}, ${JSON.stringify(tempDna)}, '[]', NOW(), NOW())
+      RETURNING id
+    `;
 
-      if (!frames || frames.length === 0) {
-        throw new Error('No frames could be extracted from this URL.');
-      }
+    // Trigger the background analysis
+    runBackgroundAnalysis(session.id, videoUrl, userId, 'url', null, originalUrl);
 
-      let transcript = "";
-      let music = null;
-      if (audioPath) {
-        try { music = await identifyMusic(audioPath); } catch (err) { console.error('Music identification failed:', err.message); }
-        try { transcript = await transcribeAudio(audioPath); } catch (err) {}
-      }
-
-      const analysis = await analyzeVideoFrames(frames, 'URL Analysis', transcript, music);
-
-      if (userId) {
-        try {
-          await sql`UPDATE users SET total_videos_analyzed = total_videos_analyzed + 1 WHERE id = ${userId}`;
-          await sql`INSERT INTO scan_events (user_id, created_at) VALUES (${userId}, NOW())`;
-        } catch (err) {}
-      }
-
-      try {
-        await sql`
-          INSERT INTO ad_benchmarks (user_id, video_url, niche, hook_power, retention_score, conversion_trigger,
-            awareness_level, style, primary_trigger, transcript_length)
-          VALUES (${userId || null}, ${originalUrl || null}, ${analysis.niche || 'General'},
-            ${analysis.metrics?.hook_power || 0}, ${analysis.metrics?.retention_score || 0},
-            ${analysis.metrics?.conversion_trigger || 0}, ${analysis.awareness_level || null},
-            ${analysis.vibe_assessment?.style || null}, ${analysis.psychology_breakdown?.primary_trigger || null},
-            ${transcript?.length || 0})
-        `;
-      } catch (e) { /* silent */ }
-
-      // Cache the result for future requests
-      const resultPayload = { analysis, framesAnalyzed: frames.length, hasAudio: !!transcript };
-      await setCachedAnalysis(videoUrl, resultPayload);
-
-      return resultPayload;
-    });
-
-    res.json({ success: true, ...result });
+    res.json({ success: true, sessionId: session.id });
 
   } catch (error) {
-    if (error.message?.includes('timed out')) {
-      return res.status(503).json({ error: 'Server is busy processing other videos. Please try again in a moment.' });
-    }
     res.status(500).json({ error: 'URL Video audit failed', details: error.message });
   }
 });
