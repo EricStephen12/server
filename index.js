@@ -5,17 +5,14 @@ const dotenv = require('dotenv');
 const path = require('path');
 const Groq = require('groq-sdk');
 const multer = require('multer');
-const { extractFrames } = require('./utils/frameExtractor');
 const { analyzeVideoFrames } = require('./utils/visionAnalyzer');
-const { transcribeAudio } = require('./utils/audioTranscriber');
-const { identifyMusic } = require('./utils/musicRecognizer');
+const { selectSmartFrames } = require('./utils/smartFrameSelector');
 const { sql, testConnection } = require('./db/index');
 const prisma = require('./db/prisma');
 const adminRouter = require('./routes/admin');
 const adminAuthRouter = require('./routes/adminAuth');
 const supportRouter = require('./routes/support');
-
-const polarWebhooks = require('./routes/polar');
+const revenuecatWebhooks = require('./routes/revenuecat');
 const userRouter = require('./routes/user');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
@@ -23,17 +20,16 @@ const { requireAuth, requireOwnership } = require('./middleware/clerkAuth');
 const { sanitizeVideoUrl } = require('./utils/sanitize');
 const { enqueueVideoJob, getQueueStats } = require('./utils/videoQueue');
 const { getCachedAnalysis, setCachedAnalysis, getCacheStats } = require('./utils/analysisCache');
+const { analyzeQueue } = require('./utils/queue');
 
 dotenv.config();
 
-
 process.on('unhandledRejection', (reason, promise) => {
-
+    console.error('Unhandled Rejection at:', promise, 'reason:', reason);
 });
 
 process.on('uncaughtException', (err) => {
-
-
+    console.error('Uncaught Exception:', err);
 });
 
 const app = express();
@@ -41,7 +37,7 @@ const port = process.env.PORT || 4000;
 
 app.set('trust proxy', 1);
 
-// Ensure uploads directory exists — uses /tmp on Modal, local uploads/ otherwise
+// Ensure uploads directory exists
 const uploadsDir = process.env.UPLOAD_DIR || path.join(__dirname, 'uploads');
 if (!require('fs').existsSync(uploadsDir)) {
   require('fs').mkdirSync(uploadsDir, { recursive: true });
@@ -58,8 +54,6 @@ const upload = multer({
     }
   }
 });
-
-
 
 app.use(cors({
   origin: function (origin, callback) {
@@ -104,7 +98,7 @@ const authLimiter = rateLimit({
 app.use('/api/', globalLimiter);
 
 
-app.use('/api/webhooks/polar', polarWebhooks);
+app.use('/api/webhooks/revenuecat', revenuecatWebhooks);
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -552,234 +546,74 @@ const [user] = await sql`SELECT subscription_tier FROM users WHERE id = ${userId
 
 
 
-async function runBackgroundAnalysis(sessionId, videoUrlOrPath, userId, type, originalFilepath, originalUrl) {
-  const fs = require('fs');
-  try {
-    await enqueueVideoJob(async () => {
-      const { frames, audioPath } = await extractFrames(videoUrlOrPath);
 
-      if (!frames || frames.length === 0) {
-        throw new Error('No frames could be extracted from this video.');
-      }
-
-      let transcript = "";
-      let music = null;
-      if (audioPath) {
-        try { music = await identifyMusic(audioPath); } catch (err) { console.error('Music identification failed:', err.message); }
-        try { transcript = await transcribeAudio(audioPath); } catch (err) { console.error('Transcription failed:', err.message); }
-      }
-
-      const analysis = await analyzeVideoFrames(
-        frames,
-        type === 'upload' ? 'Uploaded Draft Analysis' : 'URL Analysis',
-        transcript,
-        music
-      );
-
-      if (userId) {
-        try {
-          await sql`UPDATE users SET total_videos_analyzed = total_videos_analyzed + 1 WHERE id = ${userId}`;
-          await sql`INSERT INTO scan_events (user_id, created_at) VALUES (${userId}, NOW())`;
-        } catch (err) {
-          console.error('Failed to update user stats in background:', err.message);
-        }
-      }
-
-      try {
-        await sql`
-          INSERT INTO ad_benchmarks (user_id, video_url, niche, hook_power, retention_score, conversion_trigger,
-            awareness_level, style, primary_trigger, transcript_length)
-          VALUES (${userId || null}, ${originalUrl || null}, ${analysis.niche || 'General'},
-            ${analysis.metrics?.hook_power || 0}, ${analysis.metrics?.retention_score || 0},
-            ${analysis.metrics?.conversion_trigger || 0}, ${analysis.awareness_level || null},
-            ${analysis.vibe_assessment?.style || null}, ${analysis.psychology_breakdown?.primary_trigger || null},
-            ${transcript?.length || 0})
-        `;
-      } catch (e) {
-        console.error('Failed to insert benchmarks in background:', e.message);
-      }
-
-      // If it's a URL analysis, cache the successful result
-      if (type === 'url') {
-        const resultPayload = { analysis, framesAnalyzed: frames.length, hasAudio: !!transcript };
-        await setCachedAnalysis(videoUrlOrPath, resultPayload);
-      }
-
-      // Update the lounge session to complete state
-      const cleanTitle = `Analysis: ${(originalUrl || videoUrlOrPath).substring(0, 30)}...`;
-      await sql`
-        UPDATE lounge_sessions
-        SET dna = ${JSON.stringify(analysis)}, title = ${cleanTitle}, updated_at = NOW()
-        WHERE id = ${sessionId}
-      `;
-
-      // Cleanup files if uploaded
-      if (type === 'upload' && originalFilepath && fs.existsSync(originalFilepath)) {
-        try { fs.unlinkSync(originalFilepath); } catch (err) { console.error('Failed to delete upload file:', err.message); }
-      }
-    });
-  } catch (error) {
-    console.error(`Background analysis failed for session ${sessionId}:`, error.message);
-    const failedDna = { status: 'failed', error: error.message || 'Unknown processing error' };
-    try {
-      await sql`
-        UPDATE lounge_sessions
-        SET dna = ${JSON.stringify(failedDna)}, updated_at = NOW()
-        WHERE id = ${sessionId}
-      `;
-    } catch (dbErr) {
-      console.error('Failed to record job failure in database:', dbErr.message);
-    }
-    // Cleanup files if uploaded
-    if (type === 'upload' && originalFilepath && fs.existsSync(originalFilepath)) {
-      try { fs.unlinkSync(originalFilepath); } catch (err) { console.error('Failed to delete upload file:', err.message); }
-    }
-  }
-}
-
-app.post('/api/analyze-video', requireAuth, requireOwnership, scanLimiter, upload.single('video'), async (req, res) => {
-  if (!req.file) {
-    return res.status(400).json({ error: 'No video file uploaded or file type is not supported' });
-  }
-  let userId = req.body.userId;
-  if (!userId) return res.status(400).json({ error: 'User ID required' });
+app.post('/api/analyze', requireAuth, requireOwnership, scanLimiter, express.json({ limit: '100mb' }), async (req, res) => {
+  let { frames, duration, sourceUrl, userId } = req.body;
+  if (!frames || !Array.isArray(frames)) return res.status(400).json({ error: 'Frames array required' });
+  if (!duration) return res.status(400).json({ error: 'Video duration required' });
 
   userId = await resolveInternalId(userId);
   if (!userId) return res.status(404).json({ error: 'User resolution failed' });
 
+  let plan = 'free';
   if (userId) {
     const limit = await checkLimits(userId, 'scan');
     if (!limit.allowed) {
-      // Cleanup uploaded file since we're rejecting the request
-      const fs = require('fs');
-      if (req.file.path && fs.existsSync(req.file.path)) {
-        try { fs.unlinkSync(req.file.path); } catch (err) {}
-      }
       return res.status(403).json({
         error: 'Creative License Inactive',
         details: 'You need an active subscription or trial to scan videos. Upgrade now to get started!',
         upgradeRequired: true
       });
     }
+
+    try {
+      const [user] = await sql`SELECT subscription_tier FROM users WHERE id = ${userId}`;
+      if (user && user.subscription_tier) plan = user.subscription_tier;
+    } catch(err) {}
+  }
+
+  // Tier-based length validation
+  let maxLength = 90; // free
+  let maxFrames = 5;
+  if (plan === 'creator') {
+      maxLength = 300; // 5 mins
+      maxFrames = 15;
+  } else if (plan === 'studio') {
+      maxLength = 1800; // 30 mins
+      maxFrames = 25;
+  }
+
+  if (duration > maxLength) {
+      return res.status(400).json({ error: `Video is too long (${Math.round(duration)}s). Maximum for ${plan} tier is ${maxLength}s.` });
   }
 
   try {
-    const videoName = req.file.originalname || 'Uploaded Video';
-    const tempTitle = `Analysis: Processing...`;
+    // Implement smart frame selection
+    const selectedFrames = selectSmartFrames(frames, maxFrames);
+
+    const originalUrl = sourceUrl || 'Direct Upload';
+    const cleanTitle = `Analysis: ${originalUrl.substring(0, 30)}...`;
     
     // Create new lounge session in "processing" state
     const tempDna = { status: 'processing' };
     const [session] = await sql`
       INSERT INTO lounge_sessions(user_id, title, video_url, dna, messages, created_at, updated_at)
-      VALUES(${userId}, ${tempTitle}, ${videoName}, ${JSON.stringify(tempDna)}, '[]', NOW(), NOW())
+      VALUES(${userId}, ${cleanTitle}, ${originalUrl}, ${JSON.stringify(tempDna)}, '[]', NOW(), NOW())
       RETURNING id
     `;
 
-    // Trigger the background analysis
-    runBackgroundAnalysis(session.id, req.file.path, userId, 'upload', req.file.path, null);
+    // Enqueue the heavy processing to BullMQ worker
+    await analyzeQueue.add('analyze-video', {
+      sessionId: session.id,
+      userId,
+      frames: selectedFrames,
+      originalUrl,
+      niche: req.body.niche
+    });
 
-    // Return the sessionId immediately
     res.json({ success: true, sessionId: session.id });
   } catch (error) {
-    // Cleanup uploaded file on error
-    const fs = require('fs');
-    if (req.file.path && fs.existsSync(req.file.path)) {
-      try { fs.unlinkSync(req.file.path); } catch (err) {}
-    }
     res.status(500).json({ error: 'Video audit failed', details: error.message });
-  }
-});
-
-app.post('/api/analyze-video-url', requireAuth, requireOwnership, scanLimiter, async (req, res) => {
-  let { videoUrl, userId } = req.body;
-  if (!videoUrl) return res.status(400).json({ error: 'Video URL required' });
-
-  // Sanitize URL before passing to frame extractor
-  const sanitized = sanitizeVideoUrl(videoUrl);
-  if (!sanitized.valid) {
-    return res.status(400).json({ error: sanitized.error });
-  }
-  videoUrl = sanitized.url;
-
-  userId = await resolveInternalId(userId);
-  if (!userId) return res.status(404).json({ error: 'User resolution failed' });
-
-  if (!process.env.GROQ_API_KEY) {
-    return res.status(503).json({ error: 'Groq API not configured' });
-  }
-
-  if (userId) {
-    const limit = await checkLimits(userId, 'scan');
-    if (!limit.allowed) {
-      return res.status(403).json({
-        error: 'Creative License Inactive',
-        details: 'You need an active subscription or trial to scan videos. Upgrade now to get started!',
-        upgradeRequired: true
-      });
-    }
-  }
-
-  try {
-    const originalUrl = req.body.videoUrl;
-
-    // Check cache first — same URL = same DNA, no need to re-process
-    const cached = await getCachedAnalysis(videoUrl);
-    if (cached) {
-      // Still log the scan event for usage tracking
-      if (userId) {
-        try {
-          await sql`UPDATE users SET total_videos_analyzed = total_videos_analyzed + 1 WHERE id = ${userId}`;
-          await sql`INSERT INTO scan_events (user_id, created_at) VALUES (${userId}, NOW())`;
-        } catch (err) {}
-      }
-
-      // Create a completed session immediately
-      const cleanTitle = `Analysis: ${originalUrl.substring(0, 30)}...`;
-      const [session] = await sql`
-        INSERT INTO lounge_sessions(user_id, title, video_url, dna, messages, created_at, updated_at)
-        VALUES(${userId}, ${cleanTitle}, ${originalUrl}, ${JSON.stringify(cached.analysis)}, '[]', NOW(), NOW())
-        RETURNING id
-      `;
-
-      return res.json({ success: true, sessionId: session.id, fromCache: true });
-    }
-
-    const tempTitle = `Analysis: Processing...`;
-    const tempDna = { status: 'processing' };
-    const [session] = await sql`
-      INSERT INTO lounge_sessions(user_id, title, video_url, dna, messages, created_at, updated_at)
-      VALUES(${userId}, ${tempTitle}, ${originalUrl}, ${JSON.stringify(tempDna)}, '[]', NOW(), NOW())
-      RETURNING id
-    `;
-
-    // Trigger the background analysis
-    runBackgroundAnalysis(session.id, videoUrl, userId, 'url', null, originalUrl);
-
-    res.json({ success: true, sessionId: session.id });
-
-  } catch (error) {
-    res.status(500).json({ error: 'URL Video audit failed', details: error.message });
-  }
-});
-
-// Benchmark API — returns niche-level comparative data
-app.get('/api/niche-benchmarks', async (req, res) => {
-  const { niche } = req.query;
-  if (!niche) return res.json({ total_ads: 0 });
-
-  try {
-    const [benchmarks] = await sql`
-      SELECT 
-        COUNT(*)::int as total_ads,
-        ROUND(AVG(hook_power), 1) as avg_hook,
-        ROUND(AVG(retention_score), 1) as avg_retention,
-        ROUND(AVG(conversion_trigger), 1) as avg_conversion
-      FROM ad_benchmarks
-      WHERE niche ILIKE ${'%' + niche + '%'}
-    `;
-    res.json(benchmarks || { total_ads: 0 });
-  } catch (e) {
-    res.json({ total_ads: 0 });
   }
 });
 
@@ -1193,7 +1027,7 @@ if (adData.analysis && adData.analysis.hook) {
 app.post('/api/creative-director-chat', requireAuth, requireOwnership, async (req, res) => {
   let { messages, dna, isRoastMode, userId } = req.body;
 
-  if (!groq) return res.status(503).json({ error: 'AI service not available' });
+  // groq check removed in favor of openrouter
 
   userId = await resolveInternalId(userId);
   if (!userId) return res.status(404).json({ error: 'User resolution failed' });
@@ -1247,7 +1081,7 @@ app.post('/api/creative-director-chat', requireAuth, requireOwnership, async (re
     ` : 'Bridge the DNA to their product. If they sell [Product], tell them exactly how to remix [Hook] for it. Always end with a suggestion for a script or hook variation.'}
     `;
 
-    let completion;
+    let responseText;
     const MAX_RETRIES = 3;
     const sanitizedMessages = (messages || []).map(msg => ({
       role: msg.role,

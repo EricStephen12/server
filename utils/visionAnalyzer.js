@@ -1,12 +1,9 @@
-const Groq = require('groq-sdk');
-
+// Removed Groq SDK in favor of fetch for OpenRouter
 
 async function analyzeVideoFrames(frames, productContext = '', transcript = '', music = null) {
-  if (!process.env.GROQ_API_KEY) {
-    throw new Error('Groq API Key is missing for Vision Analysis');
+  if (!process.env.OPENROUTER_API_KEY) {
+    throw new Error('OpenRouter API Key is missing for Vision Analysis');
   }
-
-  const groq = new Groq({ apiKey: process.env.GROQ_API_KEY, timeout: 30000 });
 
   // Build the FULL frame map so the AI knows the entire video structure
   const frameMap = frames.map((f, i) => 
@@ -149,20 +146,44 @@ Output as JSON with this EXACT structure:
   ];
 
   try {
-    const completion = await groq.chat.completions.create({
-      messages,
-      model: 'meta-llama/llama-4-scout-17b-16e-instruct',
-      response_format: { type: 'json_object' },
-      temperature: 0.3,
+    const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
+        'Content-Type': 'application/json',
+        'HTTP-Referer': 'https://eixora.com',
+        'X-Title': 'Eixora Mobile',
+      },
+      body: JSON.stringify({
+        model: 'google/gemini-2.0-flash-exp:free', // Free model for testing
+        messages,
+        response_format: { type: 'json_object' },
+        temperature: 0.3,
+      })
     });
 
-    const responseText = completion.choices[0]?.message?.content;
-    if (!responseText) throw new Error('Empty response from Groq Vision');
+    if (!response.ok) {
+        const errText = await response.text();
+        throw new Error(`OpenRouter API error: ${response.status} - ${errText}`);
+    }
 
-    return JSON.parse(responseText);
+    const completion = await response.json();
+    const responseText = completion.choices[0]?.message?.content;
+    
+    if (!responseText) throw new Error('Empty response from OpenRouter/Claude');
+
+    // Claude sometimes wraps JSON in markdown blocks
+    let cleanedText = responseText.trim();
+    if (cleanedText.startsWith('\`\`\`json')) {
+        cleanedText = cleanedText.replace(/^\`\`\`json/, '').replace(/\`\`\`$/, '').trim();
+    } else if (cleanedText.startsWith('\`\`\`')) {
+        cleanedText = cleanedText.replace(/^\`\`\`/, '').replace(/\`\`\`$/, '').trim();
+    }
+
+    return JSON.parse(cleanedText);
 
   } catch (error) {
-
+    console.error('Vision analysis error:', error);
     throw new Error(`Video analysis failed: ${error.message}`);
   }
 }
