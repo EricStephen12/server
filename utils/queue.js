@@ -4,7 +4,9 @@ const { analyzeVideoFrames } = require('./visionAnalyzer');
 const { sql } = require('../db/index');
 
 // Shared Redis connection for BullMQ
-const connection = new Redis(process.env.REDIS_URL || 'redis://127.0.0.1:6379');
+const connection = new Redis(process.env.REDIS_URL || 'redis://127.0.0.1:6379', {
+  maxRetriesPerRequest: null
+});
 
 // Queue setup
 const analyzeQueue = new Queue('analyze-video-queue', { connection });
