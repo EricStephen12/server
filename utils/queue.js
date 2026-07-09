@@ -13,12 +13,12 @@ const analyzeQueue = new Queue('analyze-video-queue', { connection });
 
 // Worker setup
 const analyzeWorker = new Worker('analyze-video-queue', async job => {
-  const { sessionId, userId, frames, originalUrl, niche } = job.data;
+  const { sessionId, userId, frames, originalUrl, niche, mode } = job.data;
   console.log(`[Worker] Started processing analysis job for session ${sessionId}...`);
 
   try {
     // Run the actual analysis
-    const analysis = await analyzeVideoFrames(frames, 'Mobile Analysis', '', null);
+    const analysis = await analyzeVideoFrames(frames, 'Mobile Analysis', '', null, mode || 'ad');
     
     // Update stats
     if (userId) {

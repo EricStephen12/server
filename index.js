@@ -548,7 +548,7 @@ const [user] = await sql`SELECT subscription_tier FROM users WHERE id = ${userId
 
 
 app.post('/api/analyze', requireAuth, requireOwnership, scanLimiter, express.json({ limit: '100mb' }), async (req, res) => {
-  let { frames, duration, sourceUrl, userId } = req.body;
+  let { frames, duration, sourceUrl, userId, mode } = req.body;
   if (!frames || !Array.isArray(frames)) return res.status(400).json({ error: 'Frames array required' });
   if (!duration) return res.status(400).json({ error: 'Video duration required' });
 
@@ -608,7 +608,8 @@ app.post('/api/analyze', requireAuth, requireOwnership, scanLimiter, express.jso
       userId,
       frames: selectedFrames,
       originalUrl,
-      niche: req.body.niche
+      niche: req.body.niche,
+      mode: mode || 'ad'
     });
 
     res.json({ success: true, sessionId: session.id });
@@ -1381,154 +1382,6 @@ app.post('/api/generate-hook-variations', requireAuth, requireOwnership, async (
   }
 });
 
-app.post('/api/team/invite', requireAuth, requireOwnership, async (req, res) => {
-  const { email, userId } = req.body;
-  if (!userId) return res.status(400).json({ error: 'User ID required' });
-
-  const [user] = await sql`SELECT subscription_tier FROM users WHERE id = ${userId}`;
-  const tier = user?.subscription_tier || 'free';
-  if (tier !== 'studio' && tier !== 'agency') {
-    return res.status(403).json({
-      error: 'Studio Access Required',
-      details: 'Team Members is a Studio plan feature. Upgrade to collaborate with your team.'
-    });
-  }
-
-  try {
-
-    const memberEmail = email; // For context
-
-    const [{ count }] = await sql`SELECT count(*)::int FROM team_members WHERE owner_id = ${userId}`;
-    if (count >= 5) {
-      return res.status(400).json({ error: 'Maximum 5 team members allowed on the Studio plan.' });
-    }
-
-const [existing] = await sql`SELECT id FROM team_members WHERE owner_id = ${userId} AND member_email = ${email}`;
-    if (existing) {
-      return res.status(400).json({ error: 'This email is already a team member.' });
-    }
-
-const [existingUser] = await sql`SELECT id FROM users WHERE email = ${email}`;
-
-    await sql`
-      INSERT INTO team_members (owner_id, member_email, role)
-      VALUES (${userId}, ${email}, 'member')
-    `;
-
-    res.json({ success: true, message: `Invite sent to ${email}` });
-  } catch (err) {
-
-    res.status(500).json({ error: 'Failed to invite team member' });
-  }
-});
-
-app.get('/api/team/list', requireAuth, async (req, res) => {
-  const { userId } = req.query;
-  if (!userId) return res.status(400).json({ error: 'User ID required' });
-
-  const ownerId = await resolveInternalId(userId);
-  if (!ownerId) return res.status(404).json({ error: 'User not found' });
-
-  try {
-    const members = await sql`SELECT * FROM team_members WHERE owner_id = ${ownerId} ORDER BY created_at DESC`;
-    res.json({ members });
-  } catch (err) {
-
-    res.status(500).json({ error: 'Failed to list team' });
-  }
-});
-
-app.delete('/api/team/remove/:memberId', requireAuth, requireOwnership, async (req, res) => {
-  const { userId } = req.body;
-  if (!userId) return res.status(400).json({ error: 'User ID required' });
-  try {
-    const { memberId } = req.params;
-
-const [member] = await sql`SELECT * FROM team_members WHERE id = ${memberId} AND owner_id = ${userId}`;
-    if (!member) {
-      return res.status(404).json({ error: 'Team member not found' });
-    }
-
-if (member.member_user_id) {
-      await sql`UPDATE users SET subscription_tier = 'free' WHERE id = ${member.member_user_id}`;
-    }
-
-    await sql`DELETE FROM team_members WHERE id = ${memberId} AND owner_id = ${req.user.id}`;
-
-res.json({ success: true });
-
-  } catch (error) {
-
-    res.status(500).json({ error: 'Failed to remove team member' });
-  }
-});
-
-app.post('/api/webhooks/gumroad', async (req, res) => {
-  try {
-    const {
-      email,
-      product_permalink,
-      subscription_id,
-      is_recurring_charge,
-      refunded,
-      sale_id,
-      price,
-      product_name,
-      test: isTest
-    } = req.body;
-
-if (!email) {
-
-      return res.status(200).json({ status: 'ignored', reason: 'no email' });
-    }
-
-const [user] = await sql`SELECT id, subscription_tier FROM users WHERE email = ${email}`;
-
-    if (!user) {
-
-      return res.status(200).json({ status: 'ignored', reason: 'user not found' });
-    }
-
-const isRefunded = refunded === 'true' || refunded === true;
-    const isCancelled = req.body.subscription_cancelled_at || req.body.is_subscription_ended === 'true' || req.body.is_subscription_ended === true;
-
-    if (isRefunded || isCancelled) {
-
-      await sql`
-        UPDATE users
-        SET subscription_tier = 'free',
-            subscription_status = ${isRefunded ? 'refunded' : 'cancelled'},
-            updated_at = NOW()
-        WHERE id = ${user.id}
-      `;
-      return res.status(200).json({ status: 'downgraded', reason: isRefunded ? 'refund' : 'cancel' });
-    }
-
-let subscriptionTier = 'founding'; // default to founding
-    const nameLower = (product_name || '').toLowerCase();
-    const permalinkLower = (product_permalink || '').toLowerCase();
-
-    if (nameLower.includes('studio') || permalinkLower.includes('studio') || nameLower.includes('agency') || permalinkLower.includes('agency')) {
-      subscriptionTier = 'studio';
-    } else if (nameLower.includes('creator') || permalinkLower.includes('creator')) {
-      subscriptionTier = 'creator';
-    }
-
-await sql`
-      UPDATE users
-      SET subscription_tier = ${subscriptionTier},
-          subscription_status = 'active',
-          updated_at = NOW()
-      WHERE id = ${user.id}
-    `;
-
-return res.status(200).json({ status: 'success', tier: subscriptionTier });
-
-  } catch (err) {
-
-    return res.status(200).json({ status: 'error', message: err.message });
-  }
-});
 
 // Queue status endpoint — useful for monitoring
 app.get('/api/queue-status', requireAuth, async (req, res) => {
