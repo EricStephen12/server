@@ -3,7 +3,9 @@ const path = require('path');
 const axios = require('axios');
 const ffmpeg = require('fluent-ffmpeg');
 const ffmpegStatic = require('ffmpeg-static');
+const ffprobeStatic = require('@ffprobe-installer/ffprobe');
 if (ffmpegStatic) ffmpeg.setFfmpegPath(ffmpegStatic);
+if (ffprobeStatic.path) ffmpeg.setFfprobePath(ffprobeStatic.path);
 const crypto = require('crypto');
 
 /**

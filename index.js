@@ -219,7 +219,9 @@ app.get('/api/test-tiktok', requireAuth, async (req, res) => {
   const fs = require('fs');
   const ffmpeg = require('fluent-ffmpeg');
   const ffmpegStatic = require('ffmpeg-static');
+  const ffprobeStatic = require('@ffprobe-installer/ffprobe');
   if (ffmpegStatic) ffmpeg.setFfmpegPath(ffmpegStatic);
+  if (ffprobeStatic.path) ffmpeg.setFfprobePath(ffprobeStatic.path);
 
   const result = { url: videoUrl, steps: {} };
   let videoDownloadUrl = null;
