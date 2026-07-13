@@ -26,10 +26,26 @@ async function extractFramesBackend(url, maxFrames = 5) {
   fs.mkdirSync(framesDir, { recursive: true });
 
   try {
+    let finalUrl = url;
+
+    // Resolve TikTok URLs to raw MP4 streams using tikwm
+    if (url.includes('tiktok.com')) {
+      const cleanUrl = url.split('?')[0];
+      const tikwmRes = await axios.post('https://tikwm.com/api/',
+        new URLSearchParams({ url: cleanUrl }),
+        { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
+      );
+      if (tikwmRes.data?.data?.play) {
+         finalUrl = tikwmRes.data.data.play;
+      } else {
+         throw new Error('Failed to resolve TikTok video stream');
+      }
+    }
+
     // 1. Download video
     const dlRes = await axios({
       method: 'get',
-      url,
+      url: finalUrl,
       responseType: 'stream',
       timeout: 60000,
       headers: {
