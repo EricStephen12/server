@@ -1,6 +1,7 @@
 const { Queue, Worker } = require('bullmq');
 const Redis = require('ioredis');
 const { analyzeVideoFrames } = require('./visionAnalyzer');
+const { extractFramesBackend } = require('./videoExtractor');
 const { sql } = require('../db/index');
 
 // Shared Redis connection for BullMQ
@@ -13,11 +14,20 @@ const analyzeQueue = new Queue('analyze-video-queue', { connection });
 
 // Worker setup
 const analyzeWorker = new Worker('analyze-video-queue', async job => {
-  const { sessionId, userId, frames, originalUrl, niche, mode } = job.data;
+  const { sessionId, userId, originalUrl, niche, mode, maxFrames, maxLength } = job.data;
   console.log(`[Worker] Started processing analysis job for session ${sessionId}...`);
 
   try {
-    // Run the actual analysis
+    // 1. Download and extract frames on the backend
+    console.log(`[Worker] Extracting up to ${maxFrames} frames from ${originalUrl}...`);
+    const { frames, duration } = await extractFramesBackend(originalUrl, maxFrames);
+    
+    // 2. Validate duration limits (since we couldn't do it before download)
+    if (duration > maxLength) {
+      throw new Error(`Video is too long (${Math.round(duration)}s). Maximum allowed is ${maxLength}s.`);
+    }
+
+    // 3. Run the actual analysis
     const analysis = await analyzeVideoFrames(frames, 'Mobile Analysis', '', null, mode || 'ad');
     
     // Update stats

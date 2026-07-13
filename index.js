@@ -547,10 +547,9 @@ const [user] = await sql`SELECT subscription_tier FROM users WHERE id = ${userId
 
 
 
-app.post('/api/analyze', requireAuth, requireOwnership, scanLimiter, express.json({ limit: '100mb' }), async (req, res) => {
-  let { frames, duration, sourceUrl, userId, mode } = req.body;
-  if (!frames || !Array.isArray(frames)) return res.status(400).json({ error: 'Frames array required' });
-  if (!duration) return res.status(400).json({ error: 'Video duration required' });
+app.post('/api/analyze', requireAuth, requireOwnership, scanLimiter, express.json({ limit: '10mb' }), async (req, res) => {
+  let { sourceUrl, userId, mode, niche } = req.body;
+  if (!sourceUrl) return res.status(400).json({ error: 'Video URL required' });
 
   userId = await resolveInternalId(userId);
   if (!userId) return res.status(404).json({ error: 'User resolution failed' });
@@ -583,14 +582,7 @@ app.post('/api/analyze', requireAuth, requireOwnership, scanLimiter, express.jso
       maxFrames = 25;
   }
 
-  if (duration > maxLength) {
-      return res.status(400).json({ error: `Video is too long (${Math.round(duration)}s). Maximum for ${plan} tier is ${maxLength}s.` });
-  }
-
   try {
-    // Implement smart frame selection
-    const selectedFrames = selectSmartFrames(frames, maxFrames);
-
     const originalUrl = sourceUrl || 'Direct Upload';
     const cleanTitle = `Analysis: ${originalUrl.substring(0, 30)}...`;
     
@@ -606,10 +598,11 @@ app.post('/api/analyze', requireAuth, requireOwnership, scanLimiter, express.jso
     await analyzeQueue.add('analyze-video', {
       sessionId: session.id,
       userId,
-      frames: selectedFrames,
       originalUrl,
-      niche: req.body.niche,
-      mode: mode || 'ad'
+      niche,
+      mode: mode || 'ad',
+      maxFrames,
+      maxLength
     });
 
     res.json({ success: true, sessionId: session.id });
