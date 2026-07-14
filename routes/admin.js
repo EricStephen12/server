@@ -88,6 +88,9 @@ router.get('/users', async (req, res) => {
                 brand_niche,
                 primary_goal,
                 source,
+                credits_remaining,
+                is_admin,
+                status,
                 created_at
             FROM users
             ORDER BY created_at DESC
@@ -149,6 +152,39 @@ router.post('/users/:id/add-credits', async (req, res) => {
         res.json({ success: true });
     } catch (err) {
         res.status(500).json({ error: 'Failed to add credits' });
+    }
+});
+
+router.post('/users/:id/make-admin', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { is_admin } = req.body;
+        await sql`UPDATE users SET is_admin = ${is_admin} WHERE id = ${id}`;
+        res.json({ success: true, is_admin });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to update admin status' });
+    }
+});
+
+router.post('/users/:id/update-status', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { status } = req.body; // 'active', 'suspended', 'blocked'
+        await sql`UPDATE users SET status = ${status} WHERE id = ${id}`;
+        res.json({ success: true, status });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to update user status' });
+    }
+});
+
+router.delete('/users/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+        // Due to CASCADE in Prisma, deleting the user will delete their sessions, accounts, scripts, etc.
+        await sql`DELETE FROM users WHERE id = ${id}`;
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to delete user' });
     }
 });
 

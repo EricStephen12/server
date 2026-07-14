@@ -28,6 +28,8 @@ model User {
   primaryGoal         String?          @map("primary_goal")
   source              String?
   totalVideosAnalyzed Int?             @default(0) @map("total_videos_analyzed")
+  isAdmin             Boolean          @default(false) @map("is_admin")
+  status              String           @default("active")
   createdAt           DateTime?        @default(now()) @map("created_at")
   
   accounts            Account[]

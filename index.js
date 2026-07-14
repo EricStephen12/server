@@ -10,7 +10,6 @@ const { selectSmartFrames } = require('./utils/smartFrameSelector');
 const { sql, testConnection } = require('./db/index');
 const prisma = require('./db/prisma');
 const adminRouter = require('./routes/admin');
-const adminAuthRouter = require('./routes/adminAuth');
 const supportRouter = require('./routes/support');
 const revenuecatWebhooks = require('./routes/revenuecat');
 const userRouter = require('./routes/user');
@@ -129,7 +128,6 @@ app.get('/health', async (req, res) => {
 
 const { resolveInternalId } = require('./utils/userResolver');
 
-app.use('/api/admin/auth', adminAuthRouter);
 app.use('/api/admin', adminRouter);
 app.use('/api/support', supportRouter);
 app.use('/api/auth', authLimiter); // Rate limit auth endpoints
