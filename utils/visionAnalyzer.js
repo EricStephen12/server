@@ -202,7 +202,7 @@ Output as JSON with this EXACT structure (maintaining backward compatibility key
         'X-Title': 'Eixora Mobile',
       },
       body: JSON.stringify({
-        model: 'google/gemini-2.0-flash-exp:free', // Free model for testing
+        model: process.env.AI_MODEL || 'google/gemini-2.0-flash-exp:free', // Configurable via .env
         messages,
         response_format: { type: 'json_object' },
         temperature: 0.3,
