@@ -9,7 +9,7 @@ async function checkAdminStatus(req, res, next) {
     }
 
     try {
-        const [user] = await sql`SELECT id, is_admin, email, name FROM users WHERE id = ${userId}`;
+        const [user] = await sql`SELECT id, is_admin, email, name FROM users WHERE clerk_id = ${userId}`;
 
         if (user && user.is_admin) {
             req.user = user;
