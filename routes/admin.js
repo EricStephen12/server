@@ -11,6 +11,7 @@ router.get('/stats', async (req, res) => {
     try {
         const [userCount] = await sql`SELECT count(*) FROM users`;
         const [scanCount] = await sql`SELECT sum(total_videos_analyzed) as total FROM users`;
+        const [waitlistCount] = await sql`SELECT count(*)::int FROM waitlist`;
         const planBreakdown = await sql`
             SELECT subscription_tier as plan_type, count(*) as count 
             FROM users 
@@ -49,6 +50,7 @@ router.get('/stats', async (req, res) => {
         res.json({
             totalUsers: parseInt(userCount.count || 0),
             totalScans: parseInt(scanCount.total || 0),
+            totalWaitlist: parseInt(waitlistCount.count || 0),
             planBreakdown: planBreakdown.map(p => ({
                 name: p.plan_type || 'free',
                 value: parseInt(p.count || 0)
@@ -117,6 +119,21 @@ router.get('/support', async (req, res) => {
     } catch (err) {
 
         res.status(500).json({ error: 'Failed to fetch tickets' });
+    }
+});
+
+
+router.get('/waitlist', async (req, res) => {
+    try {
+        const waitlist = await sql`
+            SELECT id, email, platform, created_at
+            FROM waitlist
+            ORDER BY created_at DESC
+        `;
+        res.json(waitlist);
+    } catch (err) {
+        console.error('Failed to fetch waitlist:', err);
+        res.status(500).json({ error: 'Failed to fetch waitlist' });
     }
 });
 

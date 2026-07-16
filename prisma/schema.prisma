@@ -1,6 +1,3 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
 generator client {
   provider = "prisma-client-js"
 }
@@ -11,45 +8,50 @@ datasource db {
 }
 
 model User {
-  id                  String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  clerkId             String?          @unique @map("clerk_id")
-  name                String?
-  email               String?          @unique
-  emailVerified       DateTime?        @map("email_verified")
-  image               String?
-  password            String?
-  subscriptionTier    String?          @default("free") @map("subscription_tier")
-  subscriptionStatus  String?          @default("inactive") @map("subscription_status")
-  creditsRemaining    Int?             @default(10) @map("credits_remaining")
-  totalScripts        Int?             @default(0) @map("total_scripts")
-  totalPins           Int?             @default(0) @map("total_pins")
-  onboardingCompleted Boolean          @default(false) @map("onboarding_completed")
-  brandNiche          String?          @map("brand_niche")
-  primaryGoal         String?          @map("primary_goal")
-  source              String?
-  totalVideosAnalyzed Int?             @default(0) @map("total_videos_analyzed")
-  isAdmin             Boolean          @default(false) @map("is_admin")
-  status              String           @default("active")
-  createdAt           DateTime?        @default(now()) @map("created_at")
-  
-  accounts            Account[]
-  sessions            Session[]
-  scripts             Script[]
-  loungeSessions      LoungeSession[]
+  id                                              String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name                                            String?
+  email                                           String?           @unique
+  emailVerified                                   DateTime?         @map("email_verified") @db.Timestamptz(6)
+  image                                           String?
+  password                                        String?
+  subscriptionTier                                String?           @default("free") @map("subscription_tier")
+  creditsRemaining                                Int?              @default(10) @map("credits_remaining")
+  createdAt                                       DateTime?         @default(now()) @map("created_at") @db.Timestamptz(6)
+  totalScripts                                    Int?              @default(0) @map("total_scripts")
+  totalPins                                       Int?              @default(0) @map("total_pins")
+  totalVideosAnalyzed                             Int?              @default(0) @map("total_videos_analyzed")
+  subscriptionStatus                              String?           @default("inactive") @map("subscription_status")
+  paddle_customer_id                              String?
+  next_billing_date                               DateTime?         @db.Timestamptz(6)
+  updated_at                                      DateTime?         @default(now()) @db.Timestamptz(6)
+  isAdmin                                         Boolean?          @default(false) @map("is_admin")
+  clerkId                                         String?           @unique @map("clerk_id")
+  onboardingCompleted                             Boolean?          @default(false) @map("onboarding_completed")
+  brandNiche                                      String?           @map("brand_niche")
+  primaryGoal                                     String?           @map("primary_goal")
+  source                                          String?
+  accounts                                        Account[]
+  payments                                        payments[]
+  scan_events                                     ScanEvent[]
+  sessions                                        Session[]
+  support_tickets                                 support_tickets[]
+  team_members_team_members_member_user_idTousers TeamMember[]      @relation("team_members_member_user_idTousers")
+  teamMembers                                     TeamMember[]      @relation("OwnerToMembers")
 
-  teamMembers         TeamMember[]     @relation("OwnerToMembers")
-  
   @@map("users")
 }
 
 model TeamMember {
-  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  ownerId      String   @map("owner_id") @db.Uuid
-  memberEmail  String   @map("member_email")
-  role         String   @default("member")
-  createdAt    DateTime @default(now()) @map("created_at")
-
-  owner        User     @relation("OwnerToMembers", fields: [ownerId], references: [id], onDelete: Cascade)
+  id                                       String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  ownerId                                  String    @map("owner_id") @db.Uuid
+  memberEmail                              String    @map("member_email")
+  member_user_id                           String?   @db.Uuid
+  role                                     String?   @default("member")
+  status                                   String?   @default("pending")
+  invited_at                               DateTime? @default(now()) @db.Timestamptz(6)
+  joined_at                                DateTime? @db.Timestamptz(6)
+  users_team_members_member_user_idTousers User?     @relation("team_members_member_user_idTousers", fields: [member_user_id], references: [id], onUpdate: NoAction)
+  owner                                    User      @relation("OwnerToMembers", fields: [ownerId], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@unique([ownerId, memberEmail])
   @@map("team_members")
@@ -57,21 +59,19 @@ model TeamMember {
 
 model Account {
   id                String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  userId            String  @map("user_id") @db.Uuid
   type              String
   provider          String
   providerAccountId String  @map("provider_account_id")
-  refresh_token     String? @db.Text
-  access_token      String? @db.Text
+  refresh_token     String?
+  access_token      String?
   expires_at        Int?
   token_type        String?
   scope             String?
-  id_token          String? @db.Text
+  id_token          String?
   session_state     String?
+  userId            String  @map("user_id") @db.Uuid
+  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@unique([provider, providerAccountId])
   @@map("accounts")
 }
 
@@ -79,8 +79,8 @@ model Session {
   id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   sessionToken String   @unique @map("session_token")
   userId       String   @map("user_id") @db.Uuid
-  expires      DateTime
-  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expires      DateTime @db.Timestamptz(6)
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@map("sessions")
 }
@@ -88,9 +88,9 @@ model Session {
 model VerificationToken {
   identifier String
   token      String   @unique
-  expires    DateTime
+  expires    DateTime @db.Timestamptz(6)
 
-  @@unique([identifier, token])
+  @@id([identifier, token])
   @@map("verification_tokens")
 }
 
@@ -107,7 +107,7 @@ model Ad {
   isVerified    Boolean?  @default(false) @map("is_verified")
   visualDna     Json?     @map("visual_dna")
   analysis      Json?
-  createdAt     DateTime? @default(now()) @map("created_at")
+  createdAt     DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
 
   @@map("ads")
 }
@@ -117,9 +117,7 @@ model Script {
   userId        String?   @map("user_id") @db.Uuid
   title         String?
   scriptContent Json?     @map("script_content")
-  createdAt     DateTime? @default(now()) @map("created_at")
-  
-  user          User?     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt     DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
 
   @@map("scripts")
 }
@@ -131,19 +129,69 @@ model LoungeSession {
   videoUrl  String?   @map("video_url")
   dna       Json?
   messages  Json?     @default("[]")
-  createdAt DateTime? @default(now()) @map("created_at")
-  updatedAt DateTime? @default(now()) @map("updated_at")
-  
-  user      User?     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
 
   @@map("lounge_sessions")
 }
 
 model ScanEvent {
-  id        Int      @id @default(autoincrement())
-  userId    String   @map("user_id") @db.Uuid
+  id        Int       @id @default(autoincrement())
+  userId    String    @map("user_id") @db.Uuid
+  createdAt DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  users     User      @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([userId, createdAt], map: "idx_scan_events_user_created")
+  @@map("scan_events")
+}
+
+model ad_benchmarks {
+  id                 String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id            String?   @db.Uuid
+  video_url          String?
+  niche              String?
+  hook_power         Decimal?  @db.Decimal(3, 1)
+  retention_score    Decimal?  @db.Decimal(3, 1)
+  conversion_trigger Decimal?  @db.Decimal(3, 1)
+  awareness_level    String?
+  style              String?
+  primary_trigger    String?
+  has_face           Boolean?  @default(false)
+  has_text_overlay   Boolean?  @default(false)
+  transcript_length  Int?      @default(0)
+  created_at         DateTime? @default(now()) @db.Timestamptz(6)
+
+  @@index([created_at], map: "idx_benchmarks_created")
+  @@index([niche], map: "idx_benchmarks_niche")
+}
+
+model payments {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id    String?   @db.Uuid
+  email      String?
+  amount     Int?
+  plan       String?
+  created_at DateTime? @default(now()) @db.Timestamptz(6)
+  users      User?     @relation(fields: [user_id], references: [id], onUpdate: NoAction)
+}
+
+model support_tickets {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id    String?   @db.Uuid
+  email      String?
+  subject    String
+  message    String
+  status     String?   @default("open")
+  created_at DateTime? @default(now()) @db.Timestamptz(6)
+  users      User?     @relation(fields: [user_id], references: [id], onUpdate: NoAction)
+}
+
+
+model Waitlist {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  email     String   @unique
+  platform  String   @default("unknown")
   createdAt DateTime @default(now()) @map("created_at")
 
-  @@index([userId, createdAt])
-  @@map("scan_events")
+  @@map("waitlist")
 }

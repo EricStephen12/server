@@ -3,6 +3,17 @@ const cors = require('cors');
 const cookieParser = require('cookie-parser');
 const dotenv = require('dotenv');
 const path = require('path');
+const Sentry = require('@sentry/node');
+
+dotenv.config();
+
+if (process.env.SENTRY_DSN) {
+  Sentry.init({
+    dsn: process.env.SENTRY_DSN,
+    tracesSampleRate: 1.0,
+  });
+}
+
 const Groq = require('groq-sdk');
 const multer = require('multer');
 const { analyzeVideoFrames } = require('./utils/visionAnalyzer');
@@ -13,6 +24,7 @@ const adminRouter = require('./routes/admin');
 const supportRouter = require('./routes/support');
 const revenuecatWebhooks = require('./routes/revenuecat');
 const userRouter = require('./routes/user');
+const waitlistRouter = require('./routes/waitlist');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const { requireAuth, requireOwnership } = require('./middleware/clerkAuth');
@@ -20,8 +32,6 @@ const { sanitizeVideoUrl } = require('./utils/sanitize');
 const { enqueueVideoJob, getQueueStats } = require('./utils/videoQueue');
 const { getCachedAnalysis, setCachedAnalysis, getCacheStats } = require('./utils/analysisCache');
 const { analyzeQueue } = require('./utils/queue');
-
-dotenv.config();
 
 process.on('unhandledRejection', (reason, promise) => {
     console.error('Unhandled Rejection at:', promise, 'reason:', reason);
@@ -130,8 +140,13 @@ const { resolveInternalId } = require('./utils/userResolver');
 
 app.use('/api/admin', adminRouter);
 app.use('/api/support', supportRouter);
+app.use('/api/waitlist', waitlistRouter);
 app.use('/api/auth', authLimiter); // Rate limit auth endpoints
 app.use('/api', userRouter);
+
+if (process.env.SENTRY_DSN) {
+  Sentry.setupExpressErrorHandler(app);
+}
 
 app.get('/api/debug', requireAuth, async (req, res) => {
   const { execSync } = require('child_process');
