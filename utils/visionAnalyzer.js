@@ -1,4 +1,5 @@
 // Removed Groq SDK in favor of fetch for OpenRouter
+const { sql } = require('../db/index');
 
 async function analyzeVideoFrames(frames, productContext = '', transcript = '', music = null, mode = 'ad') {
   if (!process.env.OPENROUTER_API_KEY) {
@@ -25,17 +26,31 @@ async function analyzeVideoFrames(frames, productContext = '', transcript = '', 
   };
 
   const keyFrames = selectKeyFrames(frames);
-
   const isAd = mode === 'ad';
-  const roleDescription = isAd 
-    ? "You are the most expensive Creative Director in digital advertising. You charge $2,000/hour. Clients pay because you see what others miss."
-    : "You are the most sought-after Viral Content Strategist and Storyteller. You charge $2,000/hour. Clients pay because you decode virality and pacing.";
 
-  const modeInstruction = isAd
-    ? `YOU ARE WATCHING A VIDEO AD. Your goal is to analyze its hook power, pacing, conversion triggers, and ad strength.`
-    : `YOU ARE WATCHING A STORYTELLING/ORGANIC VIDEO (TikTok, Reel, or Short). Your goal is to analyze its hook power, narrative pacing, engagement triggers, and virality potential.`;
+  let dbPrompt = null;
+  try {
+    const rows = await sql`SELECT value FROM system_settings WHERE key = 'ai_prompt'`;
+    if (rows && rows.length > 0) {
+      dbPrompt = JSON.parse(rows[0].value);
+    }
+  } catch (err) {
+    console.error("Failed to load prompt from DB, using defaults:", err);
+  }
 
-  const structureInstructions = `
+  const roleDescription = dbPrompt?.roleDescriptionAd
+    ? (isAd ? dbPrompt.roleDescriptionAd : dbPrompt.roleDescriptionContent)
+    : (isAd 
+      ? "You are the most expensive Creative Director in digital advertising. You charge $2,000/hour. Clients pay because you see what others miss."
+      : "You are the most sought-after Viral Content Strategist and Storyteller. You charge $2,000/hour. Clients pay because you decode virality and pacing.");
+
+  const modeInstruction = dbPrompt?.modeInstructionAd
+    ? (isAd ? dbPrompt.modeInstructionAd : dbPrompt.modeInstructionContent)
+    : (isAd
+      ? `YOU ARE WATCHING A VIDEO AD. Your goal is to analyze its hook power, pacing, conversion triggers, and ad strength.`
+      : `YOU ARE WATCHING A STORYTELLING/ORGANIC VIDEO (TikTok, Reel, or Short). Your goal is to analyze its hook power, narrative pacing, engagement triggers, and virality potential.`);
+
+  const structureInstructions = dbPrompt?.structureInstructions || `
 Your analysis must be structured exactly around the following sections:
 
 1. **Dashboard Overview**:

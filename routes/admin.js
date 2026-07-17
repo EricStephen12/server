@@ -205,4 +205,34 @@ router.delete('/users/:id', async (req, res) => {
     }
 });
 
+router.get('/prompt', async (req, res) => {
+    try {
+        const rows = await sql`SELECT value FROM system_settings WHERE key = 'ai_prompt'`;
+        if (rows && rows.length > 0) {
+            res.json({ prompt: JSON.parse(rows[0].value) });
+        } else {
+            res.json({ prompt: null });
+        }
+    } catch (err) {
+        console.error('Failed to fetch prompt:', err);
+        res.status(500).json({ error: 'Failed to fetch prompt' });
+    }
+});
+
+router.post('/prompt', async (req, res) => {
+    try {
+        const { roleDescriptionAd, roleDescriptionContent, modeInstructionAd, modeInstructionContent, structureInstructions } = req.body;
+        const promptJson = JSON.stringify({ roleDescriptionAd, roleDescriptionContent, modeInstructionAd, modeInstructionContent, structureInstructions });
+        await sql`
+            INSERT INTO system_settings (key, value)
+            VALUES ('ai_prompt', ${promptJson})
+            ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
+        `;
+        res.json({ success: true });
+    } catch (err) {
+        console.error('Failed to save prompt:', err);
+        res.status(500).json({ error: 'Failed to save prompt' });
+    }
+});
+
 module.exports = router;

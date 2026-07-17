@@ -195,3 +195,11 @@ model Waitlist {
 
   @@map("waitlist")
 }
+
+model SystemSettings {
+  key       String   @id
+  value     String   @db.Text
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  @@map("system_settings")
+}
