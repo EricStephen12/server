@@ -31,7 +31,7 @@ const { requireAuth, requireOwnership } = require('./middleware/clerkAuth');
 const { sanitizeVideoUrl } = require('./utils/sanitize');
 const { enqueueVideoJob, getQueueStats } = require('./utils/videoQueue');
 const { getCachedAnalysis, setCachedAnalysis, getCacheStats } = require('./utils/analysisCache');
-const { analyzeQueue } = require('./utils/queue');
+const { analyzeQueue, processAnalysisJob } = require('./utils/queue');
 
 process.on('unhandledRejection', (reason, promise) => {
     console.error('Unhandled Rejection at:', promise, 'reason:', reason);
@@ -610,7 +610,7 @@ app.post('/api/analyze', requireAuth, requireOwnership, scanLimiter, express.jso
     `;
 
     // Enqueue the heavy processing to BullMQ worker
-    await analyzeQueue.add('analyze-video', {
+    const jobData = {
       sessionId: session.id,
       userId,
       originalUrl,
@@ -618,7 +618,17 @@ app.post('/api/analyze', requireAuth, requireOwnership, scanLimiter, express.jso
       mode: mode || 'ad',
       maxFrames,
       maxLength
-    });
+    };
+
+    try {
+      await analyzeQueue.add('analyze-video', jobData);
+    } catch (queueErr) {
+      console.warn('[Queue] BullMQ failed (likely Redis limit exceeded). Falling back to background promise:', queueErr.message);
+      // Fallback: run it in the background manually
+      processAnalysisJob(jobData).catch(err => {
+        console.error('[Fallback] Background analysis failed:', err);
+      });
+    }
 
     res.json({ success: true, sessionId: session.id });
   } catch (error) {

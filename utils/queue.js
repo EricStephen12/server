@@ -12,9 +12,8 @@ const connection = new Redis(process.env.REDIS_URL || 'redis://127.0.0.1:6379', 
 // Queue setup
 const analyzeQueue = new Queue('analyze-video-queue', { connection });
 
-// Worker setup
-const analyzeWorker = new Worker('analyze-video-queue', async job => {
-  const { sessionId, userId, originalUrl, niche, mode, maxFrames, maxLength } = job.data;
+async function processAnalysisJob(data) {
+  const { sessionId, userId, originalUrl, niche, mode, maxFrames, maxLength } = data;
   console.log(`[Worker] Started processing analysis job for session ${sessionId}...`);
 
   try {
@@ -22,7 +21,7 @@ const analyzeWorker = new Worker('analyze-video-queue', async job => {
     console.log(`[Worker] Extracting up to ${maxFrames} frames from ${originalUrl}...`);
     const { frames, duration } = await extractFramesBackend(originalUrl, maxFrames);
     
-    // 2. Validate duration limits (since we couldn't do it before download)
+    // 2. Validate duration limits
     if (duration > maxLength) {
       throw new Error(`Video is too long (${Math.round(duration)}s). Maximum allowed is ${maxLength}s.`);
     }
@@ -74,6 +73,11 @@ const analyzeWorker = new Worker('analyze-video-queue', async job => {
     `;
     throw analyzeErr; // Mark job as failed in BullMQ dashboard
   }
+}
+
+// Worker setup
+const analyzeWorker = new Worker('analyze-video-queue', async job => {
+  await processAnalysisJob(job.data);
 }, { connection });
 
 analyzeWorker.on('failed', (job, err) => {
@@ -82,5 +86,6 @@ analyzeWorker.on('failed', (job, err) => {
 
 module.exports = {
   analyzeQueue,
-  analyzeWorker
+  analyzeWorker,
+  processAnalysisJob
 };
