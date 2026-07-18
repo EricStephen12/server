@@ -61,9 +61,11 @@ async function extractFramesBackend(url, maxFrames = 5) {
     });
 
     // 2. Get duration
+    console.log(`[Extractor] Running ffprobe on ${videoPath}...`);
     const metadata = await new Promise((resolve, reject) => {
       ffmpeg.ffprobe(videoPath, (err, data) => err ? reject(err) : resolve(data));
     });
+    console.log(`[Extractor] ffprobe complete.`);
     
     let duration = metadata.format?.duration || 0;
     if (duration <= 0) {
@@ -78,14 +80,16 @@ async function extractFramesBackend(url, maxFrames = 5) {
       timestamps.push(Number(t.toFixed(2))); // e.g., 0.00, 2.50
     }
 
+    console.log(`[Extractor] Starting frame extraction loop for timestamps:`, timestamps);
     for (let i = 0; i < timestamps.length; i++) {
       const t = timestamps[i];
+      console.log(`[Extractor] Extracting frame at ${t}s...`);
       await new Promise((resolve, reject) => {
         ffmpeg(videoPath)
           .seekInput(t)
           .frames(1)
           .size('640x?')
-          .outputOptions(['-threads 1', '-q:v 2'])
+          .outputOptions(['-threads', '1', '-q:v', '2'])
           .output(path.join(framesDir, `frame-at-${t}-seconds.jpg`))
           .on('end', resolve)
           .on('error', (err, stdout, stderr) => {
