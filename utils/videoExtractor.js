@@ -78,17 +78,23 @@ async function extractFramesBackend(url, maxFrames = 5) {
       timestamps.push(Number(t.toFixed(2))); // e.g., 0.00, 2.50
     }
 
-    await new Promise((resolve, reject) => {
-      ffmpeg(videoPath)
-        .on('end', resolve)
-        .on('error', reject)
-        .screenshots({
-          timestamps: timestamps,
-          filename: 'frame-at-%s-seconds.jpg',
-          folder: framesDir,
-          size: '640x?', // Scale down for faster processing and lower memory footprint
-        });
-    });
+    for (let i = 0; i < timestamps.length; i++) {
+      const t = timestamps[i];
+      await new Promise((resolve, reject) => {
+        ffmpeg(videoPath)
+          .seekInput(t)
+          .frames(1)
+          .size('640x?')
+          .outputOptions(['-threads 1', '-q:v 2'])
+          .output(path.join(framesDir, `frame-at-${t}-seconds.jpg`))
+          .on('end', resolve)
+          .on('error', (err, stdout, stderr) => {
+             console.error(`ffmpeg error at ${t}s:`, stderr);
+             reject(err);
+          })
+          .run();
+      });
+    }
 
     // 4. Read frames into Base64 format
     const frames = [];
