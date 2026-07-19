@@ -4,16 +4,22 @@ const { analyzeVideoFrames } = require('./visionAnalyzer');
 const { extractFramesBackend } = require('./videoExtractor');
 const { sql } = require('../db/index');
 
-// Shared Redis connection for BullMQ
-const connection = new Redis(process.env.REDIS_URL || 'redis://127.0.0.1:6379', {
-  maxRetriesPerRequest: null
-});
+let connection = null;
+let analyzeQueue = null;
+let analyzeWorker = null;
 
-// Queue setup
-const analyzeQueue = new Queue('analyze-video-queue', { connection });
+if (process.env.REDIS_URL) {
+  // Shared Redis connection for BullMQ
+  connection = new Redis(process.env.REDIS_URL, {
+    maxRetriesPerRequest: null
+  });
+
+  // Queue setup
+  analyzeQueue = new Queue('analyze-video-queue', { connection });
+}
 
 async function processAnalysisJob(data) {
-  const { sessionId, userId, originalUrl, niche, mode, maxFrames, maxLength } = data;
+  const { sessionId, userId, originalUrl, niche, mode, maxFrames, maxLength, plan } = data;
   console.log(`[Worker] Started processing analysis job for session ${sessionId}...`);
 
   try {
@@ -26,8 +32,8 @@ async function processAnalysisJob(data) {
       throw new Error(`Video is too long (${Math.round(duration)}s). Maximum allowed is ${maxLength}s.`);
     }
 
-    // 3. Run the actual analysis
-    const analysis = await analyzeVideoFrames(frames, 'Mobile Analysis', '', null, mode || 'ad');
+    // 3. Run the actual analysis — route model by user's plan
+    const analysis = await analyzeVideoFrames(frames, 'Mobile Analysis', '', null, mode || 'ad', plan || 'free');
     
     // Update stats
     if (userId) {
@@ -75,14 +81,16 @@ async function processAnalysisJob(data) {
   }
 }
 
-// Worker setup
-const analyzeWorker = new Worker('analyze-video-queue', async job => {
-  await processAnalysisJob(job.data);
-}, { connection });
+if (connection) {
+  // Worker setup
+  analyzeWorker = new Worker('analyze-video-queue', async job => {
+    await processAnalysisJob(job.data);
+  }, { connection });
 
-analyzeWorker.on('failed', (job, err) => {
-  console.error(`[Worker] Job ${job.id} failed with error ${err.message}`);
-});
+  analyzeWorker.on('failed', (job, err) => {
+    console.error(`[Worker] Job ${job?.id} failed with error ${err.message}`);
+  });
+}
 
 module.exports = {
   analyzeQueue,

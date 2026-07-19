@@ -1051,6 +1051,14 @@ app.post('/api/creative-director-chat', requireAuth, requireOwnership, async (re
   userId = await resolveInternalId(userId);
   if (!userId) return res.status(404).json({ error: 'User resolution failed' });
 
+  let plan = 'free';
+  try {
+    const [user] = await sql`SELECT subscription_tier FROM users WHERE id = ${userId}`;
+    if (user && user.subscription_tier) plan = user.subscription_tier;
+  } catch (err) {
+    console.error('Failed to fetch user plan for chat routing:', err);
+  }
+
   try {
     const isIntro = !messages || messages.length === 0;
 
@@ -1110,14 +1118,40 @@ app.post('/api/creative-director-chat', requireAuth, requireOwnership, async (re
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
       try {
 
-        completion = await groq.chat.completions.create({
-          messages: [
-            { role: "system", content: systemPrompt },
-            ...sanitizedMessages
-          ],
-          model: "llama-3.3-70b-versatile",
-          temperature: 0.7,
-        }, { timeout: 60000 });
+        if (plan === 'studio') {
+          // Studio uses Claude Haiku via OpenRouter
+          const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
+              'Content-Type': 'application/json',
+              'HTTP-Referer': 'https://eixora.com',
+              'X-Title': 'Eixora Mobile',
+            },
+            body: JSON.stringify({
+              model: 'anthropic/claude-3-haiku',
+              messages: [
+                { role: "system", content: systemPrompt },
+                ...sanitizedMessages
+              ],
+              temperature: 0.7,
+            })
+          });
+          
+          if (!response.ok) throw new Error(`OpenRouter API error: ${response.status}`);
+          const completionData = await response.json();
+          completion = { choices: [{ message: { content: completionData.choices[0]?.message?.content } }] };
+        } else {
+          // Creator/Free uses Llama 70B via Groq
+          completion = await groq.chat.completions.create({
+            messages: [
+              { role: "system", content: systemPrompt },
+              ...sanitizedMessages
+            ],
+            model: "llama-3.3-70b-versatile",
+            temperature: 0.7,
+          }, { timeout: 60000 });
+        }
         break; // Success — exit retry loop
       } catch (err) {
         const isNetworkError = ['ETIMEDOUT', 'ECONNRESET', 'ENOTFOUND'].includes(err.cause?.code);
