@@ -88,7 +88,7 @@ Your analysis must be structured exactly around the following sections:
 
 1. **Dashboard Overview**:
    - Niche
-   - Customer Awareness Level
+   - ${isAd ? 'Customer Awareness Level' : 'Viewer Archetype & Identity Segment'}
    - Hook Power score (/10) — follow every score with one sentence justifying why that number and not one point higher or lower
    - Retention Score (/10) — same justification rule applies
    - Conversion Trigger score (/10) representing ${isAd ? 'Ad Conversion Trigger (ability to drive a purchase/action)' : 'Engagement Trigger (ability to drive likes, shares, comments, and watch time)'} — same justification rule
@@ -112,7 +112,9 @@ Your analysis must be structured exactly around the following sections:
 
 3. **Actionable Production Directions**:
    * Exactly 3 specific, shootable, and filmable next steps for improving this video.
-   * At least one of your 3 directions MUST address the OFFER itself — check for a missing timeframe, missing proof point (before/after, results, guarantee), or a scarcity/urgency mechanism that's underused. Don't just fix the edit; fix what's being promised.
+   * ${isAd 
+       ? "At least one of your 3 directions MUST address the OFFER itself — check for a missing timeframe, missing proof point (before/after, results, guarantee), or a scarcity/urgency mechanism that's underused. Don't just fix the edit; fix what's being promised." 
+       : "At least one of your 3 directions MUST address the NARRATIVE PAYOFF — if the hook promises a story, ensure the climax actually delivers emotional weight, shock, or shareability, rather than just fizzling out."}
 
 4. **The Secret Sauce**:
    * Must open with a single declarative sentence under 8 words that states the core truth bluntly — no throat-clearing, no "This ad moves the needle because…". Start with the punch, then explain in one closing paragraph with extreme conviction and personality.
