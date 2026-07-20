@@ -1,6 +1,7 @@
 const { Queue, Worker } = require('bullmq');
 const Redis = require('ioredis');
 const { analyzeVideoFrames } = require('./visionAnalyzer');
+const { generateProductIntel } = require('./productIntel');
 const { extractFramesBackend } = require('./videoExtractor');
 const { sql } = require('../db/index');
 
@@ -32,8 +33,13 @@ async function processAnalysisJob(data) {
       throw new Error(`Video is too long (${Math.round(duration)}s). Maximum allowed is ${maxLength}s.`);
     }
 
-    // 3. Run the actual analysis — route model by user's plan
-    const analysis = await analyzeVideoFrames(frames, 'Mobile Analysis', '', null, mode || 'ad', plan || 'free');
+    // 3. Run the actual analysis — route model by user's plan and mode
+    let analysis;
+    if (mode === 'product-intel') {
+      analysis = await generateProductIntel(frames, originalUrl, plan || 'free');
+    } else {
+      analysis = await analyzeVideoFrames(frames, 'Mobile Analysis', '', null, mode || 'ad', plan || 'free');
+    }
     
     // Update stats
     if (userId) {

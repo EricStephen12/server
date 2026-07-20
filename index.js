@@ -636,6 +636,81 @@ app.post('/api/analyze', requireAuth, requireOwnership, scanLimiter, express.jso
   }
 });
 
+app.post('/api/product-intel', requireAuth, requireOwnership, scanLimiter, express.json({ limit: '10mb' }), async (req, res) => {
+  let { sourceUrl, userId } = req.body;
+  if (!sourceUrl) return res.status(400).json({ error: 'Video URL required' });
+
+  userId = await resolveInternalId(userId);
+  if (!userId) return res.status(404).json({ error: 'User resolution failed' });
+
+  let plan = 'free';
+  if (userId) {
+    const limit = await checkLimits(userId, 'scan');
+    if (!limit.allowed) {
+      return res.status(403).json({
+        error: 'Creative License Inactive',
+        details: 'You need an active subscription or trial to scan videos. Upgrade now to get started!',
+        upgradeRequired: true
+      });
+    }
+
+    try {
+      const [user] = await sql`SELECT subscription_tier FROM users WHERE id = ${userId}`;
+      if (user && user.subscription_tier) plan = user.subscription_tier;
+    } catch(err) {}
+  }
+
+  // Tier-based length validation
+  let maxLength = 90; // free
+  let maxFrames = 5;
+  if (plan === 'creator') {
+      maxLength = 300; // 5 mins
+      maxFrames = 15;
+  } else if (plan === 'studio') {
+      maxLength = 1800; // 30 mins
+      maxFrames = 25;
+  }
+
+  try {
+    const originalUrl = sourceUrl || 'Direct Upload';
+    const cleanTitle = `Product Intel: ${originalUrl.substring(0, 30)}...`;
+    
+    // Create new lounge session in "processing" state
+    const tempDna = { status: 'processing', mode: 'product-intel' };
+    const [session] = await sql`
+      INSERT INTO lounge_sessions(user_id, title, video_url, dna, messages, created_at, updated_at)
+      VALUES(${userId}, ${cleanTitle}, ${originalUrl}, ${JSON.stringify(tempDna)}, '[]', NOW(), NOW())
+      RETURNING id
+    `;
+
+    // Enqueue the heavy processing to BullMQ worker
+    const jobData = {
+      sessionId: session.id,
+      userId,
+      originalUrl,
+      niche: 'Product Identification', // default niche
+      mode: 'product-intel',
+      maxFrames,
+      maxLength,
+      plan
+    };
+
+    try {
+      await analyzeQueue.add('analyze-video', jobData);
+    } catch (queueErr) {
+      console.warn('[Queue] BullMQ failed (likely Redis limit exceeded). Falling back to background promise:', queueErr.message);
+      // Fallback: run it in the background manually
+      processAnalysisJob(jobData).catch(err => {
+        console.error('[Fallback] Background analysis failed:', err);
+      });
+    }
+
+    res.json({ success: true, sessionId: session.id });
+  } catch (error) {
+    res.status(500).json({ error: 'Product intel setup failed', details: error.message });
+  }
+});
+
 app.post('/api/generate-script', requireAuth, requireOwnership, async (req, res) => {
   let { productName, description, adId, answers, privateDna, userId } = req.body;
   if (!userId) return res.status(400).json({ error: 'User ID required' });
