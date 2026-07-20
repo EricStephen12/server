@@ -71,6 +71,7 @@ REQUIRED JSON STRUCTURE:
         messages,
         response_format: { type: 'json_object' },
         temperature: 0.1,
+        max_tokens: 1000,
       })
     });
 
@@ -248,6 +249,7 @@ Output as JSON ONLY matching this EXACT structure:
                 messages,
                 response_format: { type: 'json_object' },
                 temperature: 0.2,
+                max_tokens: 2500,
             })
         });
 

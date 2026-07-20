@@ -263,6 +263,7 @@ Output as JSON with this EXACT structure (maintaining backward compatibility key
         messages,
         response_format: { type: 'json_object' },
         temperature: 0.3,
+        max_tokens: 3000,
       })
     });
 
