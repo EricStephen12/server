@@ -65,8 +65,9 @@ async function processAnalysisJob(data) {
       console.error('[Worker] Failed to insert ad_benchmarks:', e);
     }
 
-    // Append status to DNA so frontend knows it is complete
+    // Append status and mode to DNA so frontend knows it is complete
     analysis.status = 'completed';
+    analysis.mode = mode || 'ad';
 
     await sql`
         UPDATE lounge_sessions
