@@ -23,6 +23,7 @@ const prisma = require('./db/prisma');
 const adminRouter = require('./routes/admin');
 const supportRouter = require('./routes/support');
 const revenuecatWebhooks = require('./routes/revenuecat');
+const polarWebhooks = require('./routes/polar');
 const userRouter = require('./routes/user');
 const waitlistRouter = require('./routes/waitlist');
 const helmet = require('helmet');
@@ -108,6 +109,8 @@ app.use('/api/', globalLimiter);
 
 
 app.use('/api/webhooks/revenuecat', revenuecatWebhooks);
+// IMPORTANT: Polar webhook must be mounted BEFORE express.json() so raw body is preserved for signature verification
+app.use('/api/webhooks/polar', polarWebhooks);
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -708,6 +711,87 @@ app.post('/api/product-intel', requireAuth, requireOwnership, scanLimiter, expre
     res.json({ success: true, sessionId: session.id });
   } catch (error) {
     res.status(500).json({ error: 'Product intel setup failed', details: error.message });
+  }
+});
+
+// ── Manual Video Upload ──────────────────────────────────────────────────────
+app.post('/api/upload', requireAuth, scanLimiter, upload.single('file'), async (req, res) => {
+  let { userId, mode, niche } = req.body;
+  if (!req.file) return res.status(400).json({ error: 'No video file provided' });
+
+  // Validate MIME type
+  if (!req.file.mimetype.startsWith('video/')) {
+    const fs = require('fs');
+    try { fs.unlinkSync(req.file.path); } catch (_) {}
+    return res.status(400).json({ error: 'Only video files are supported' });
+  }
+
+  userId = await resolveInternalId(userId);
+  if (!userId) return res.status(404).json({ error: 'User resolution failed' });
+
+  let plan = 'free';
+  const limit = await checkLimits(userId, 'scan');
+  if (!limit.allowed) {
+    const fs = require('fs');
+    try { fs.unlinkSync(req.file.path); } catch (_) {}
+    return res.status(403).json({
+      error: 'Creative License Inactive',
+      details: 'You need an active subscription or trial to scan videos. Upgrade now to get started!',
+      upgradeRequired: true
+    });
+  }
+
+  try {
+    const [user] = await sql`SELECT subscription_tier FROM users WHERE id = ${userId}`;
+    if (user && user.subscription_tier) plan = user.subscription_tier;
+  } catch (err) {}
+
+  // Tier-based file size limits: free=50MB, creator=200MB, studio=500MB
+  const maxSizeBytes = plan === 'studio' ? 500 * 1024 * 1024 : plan === 'creator' ? 200 * 1024 * 1024 : 50 * 1024 * 1024;
+  if (req.file.size > maxSizeBytes) {
+    const fs = require('fs');
+    try { fs.unlinkSync(req.file.path); } catch (_) {}
+    return res.status(400).json({ error: `File too large. Your plan allows up to ${maxSizeBytes / (1024 * 1024)}MB.` });
+  }
+
+  let maxLength = 90;
+  let maxFrames = 5;
+  if (plan === 'creator') { maxLength = 300; maxFrames = 15; }
+  else if (plan === 'studio') { maxLength = 1800; maxFrames = 25; }
+
+  try {
+    const originalFileName = req.file.originalname || 'Uploaded Video';
+    const cleanTitle = `Upload: ${originalFileName.substring(0, 40)}`;
+
+    const [session] = await sql`
+      INSERT INTO lounge_sessions(user_id, title, video_url, dna, messages, created_at, updated_at)
+      VALUES(${userId}, ${cleanTitle}, ${'local:' + req.file.path}, ${JSON.stringify({ status: 'processing' })}, '[]', NOW(), NOW())
+      RETURNING id
+    `;
+
+    const jobData = {
+      sessionId: session.id,
+      userId,
+      originalUrl: 'Direct Upload',
+      localFilePath: req.file.path,
+      niche,
+      mode: mode || 'ad',
+      maxFrames,
+      maxLength
+    };
+
+    try {
+      await analyzeQueue.add('analyze-video', jobData);
+    } catch (queueErr) {
+      console.warn('[Queue] BullMQ failed for upload, falling back:', queueErr.message);
+      processAnalysisJob(jobData).catch(err => {
+        console.error('[Fallback] Upload analysis failed:', err);
+      });
+    }
+
+    res.json({ success: true, sessionId: session.id });
+  } catch (error) {
+    res.status(500).json({ error: 'Upload processing failed', details: error.message });
   }
 });
 
