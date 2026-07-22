@@ -101,10 +101,10 @@ router.get('/me', async (req, res) => {
 });
 
 router.patch('/me', async (req, res) => {
-  let { userId, name, onboarding_completed, brand_niche, primary_goal, source } = req.body;
+  let { userId, name, email, onboarding_completed, brand_niche, primary_goal, source } = req.body;
   if (!userId) return res.status(400).json({ error: 'User ID required' });
 
-  userId = await resolveInternalId(userId);
+  userId = await resolveInternalId(userId, { email, name });
   if (!userId) return res.status(404).json({ error: 'User resolution failed' });
 
   try {
