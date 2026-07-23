@@ -92,7 +92,6 @@ router.get('/users', async (req, res) => {
                 source,
                 credits_remaining,
                 is_admin,
-                status,
                 created_at
             FROM users
             ORDER BY created_at DESC

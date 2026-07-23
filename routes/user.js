@@ -1,6 +1,7 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const prisma = require('../db/prisma');
+const { sql } = require('../db/index');
 const { resolveInternalId } = require('../utils/userResolver');
 
 const router = express.Router();
@@ -108,22 +109,26 @@ router.patch('/me', async (req, res) => {
   if (!userId) return res.status(404).json({ error: 'User resolution failed' });
 
   try {
-    const updatedUser = await prisma.user.update({
-      where: { id: userId },
-      data: {
-        name: name !== undefined ? name : undefined,
-        onboardingCompleted: onboarding_completed !== undefined ? onboarding_completed : undefined,
-        brandNiche: brand_niche !== undefined ? brand_niche : undefined,
-        primaryGoal: primary_goal !== undefined ? primary_goal : undefined,
-        source: source !== undefined ? source : undefined,
-      },
-      select: {
-        id: true, name: true, email: true, image: true,
-        subscriptionTier: true, creditsRemaining: true,
-        totalScripts: true, totalPins: true,
-        onboardingCompleted: true, brandNiche: true, primaryGoal: true, source: true
-      }
-    });
+    const [updatedUser] = await sql`
+      UPDATE users 
+      SET 
+        name = COALESCE(${name !== undefined ? name : sql`name`}, name),
+        onboarding_completed = COALESCE(${onboarding_completed !== undefined ? onboarding_completed : sql`onboarding_completed`}, onboarding_completed),
+        brand_niche = COALESCE(${brand_niche !== undefined ? brand_niche : sql`brand_niche`}, brand_niche),
+        primary_goal = COALESCE(${primary_goal !== undefined ? primary_goal : sql`primary_goal`}, primary_goal),
+        source = COALESCE(${source !== undefined ? source : sql`source`}, source)
+      WHERE id = ${userId}
+      RETURNING 
+        id, name, email, image, 
+        subscription_tier as "subscriptionTier", 
+        credits_remaining as "creditsRemaining",
+        total_scripts as "totalScripts", 
+        total_pins as "totalPins",
+        onboarding_completed as "onboardingCompleted", 
+        brand_niche as "brandNiche", 
+        primary_goal as "primaryGoal", 
+        source
+    `;
 
     let tier = updatedUser.subscriptionTier || 'free';
     if (tier === 'agency') tier = 'studio';
@@ -137,6 +142,7 @@ router.patch('/me', async (req, res) => {
       primary_goal: updatedUser.primaryGoal
     });
   } catch (err) {
+    console.error("Failed to update profile:", err);
     res.status(500).json({ error: 'Failed to update profile' });
   }
 });

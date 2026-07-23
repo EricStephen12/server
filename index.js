@@ -1635,6 +1635,10 @@ try {
         await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN DEFAULT FALSE`;
         await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS total_videos_analyzed INTEGER DEFAULT 0`;
         await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS clerk_id TEXT UNIQUE`;
+        await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS onboarding_completed BOOLEAN DEFAULT FALSE`;
+        await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS brand_niche TEXT`;
+        await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS primary_goal TEXT`;
+        await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS source TEXT`;
 
 await sql`
           CREATE TABLE IF NOT EXISTS support_tickets (

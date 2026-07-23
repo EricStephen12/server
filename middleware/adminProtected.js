@@ -1,5 +1,6 @@
 const { requireAuth } = require('@clerk/express');
 const { sql } = require('../db/index');
+const { resolveInternalId } = require('../utils/userResolver');
 
 async function checkAdminStatus(req, res, next) {
     const userId = req.auth?.userId;
@@ -9,15 +10,20 @@ async function checkAdminStatus(req, res, next) {
     }
 
     try {
+        // Ensure user is synced to the database
+        const dbUser = await resolveInternalId(userId);
+
         const [user] = await sql`SELECT id, is_admin, email, name FROM users WHERE clerk_id = ${userId}`;
 
         if (user && user.is_admin) {
             req.user = user;
             return next();
         }
-
+        
         const ADMIN_EMAILS = ['deamirclothingstores@gmail.com', 'hello@eixora.store'];
         if (user && user.email && ADMIN_EMAILS.includes(user.email.toLowerCase())) {
+            // Self-healing: if they are in ADMIN_EMAILS but is_admin is false, update it
+            await sql`UPDATE users SET is_admin = true WHERE id = ${user.id}`;
             req.user = { ...user, is_admin: true };
             return next();
         }
