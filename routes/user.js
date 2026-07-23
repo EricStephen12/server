@@ -1,6 +1,6 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
-const prisma = require('../db/prisma');
+
 const { sql } = require('../db/index');
 const { resolveInternalId } = require('../utils/userResolver');
 
@@ -45,24 +45,21 @@ router.get('/me', async (req, res) => {
   if (!userId) return res.status(404).json({ error: 'User not found' });
 
   try {
-    const user = await prisma.user.findUnique({
-      where: { id: userId },
-      select: {
-        id: true,
-        name: true,
-        email: true,
-        image: true,
-        subscriptionTier: true,
-        creditsRemaining: true,
-        totalScripts: true,
-        totalPins: true,
-        totalVideosAnalyzed: true,
-        onboardingCompleted: true,
-        brandNiche: true,
-        primaryGoal: true,
-        createdAt: true,
-      }
-    });
+    const [user] = await sql`
+      SELECT
+        id, name, email, image,
+        subscription_tier as "subscriptionTier",
+        credits_remaining as "creditsRemaining",
+        total_scripts as "totalScripts",
+        total_pins as "totalPins",
+        total_videos_analyzed as "totalVideosAnalyzed",
+        onboarding_completed as "onboardingCompleted",
+        brand_niche as "brandNiche",
+        primary_goal as "primaryGoal",
+        created_at as "createdAt"
+      FROM users
+      WHERE id = ${userId}
+    `;
 
     if (!user) return res.status(404).json({ error: 'User not found' });
 
@@ -155,10 +152,14 @@ router.get('/plan-check', async (req, res) => {
   if (!userId) return res.status(404).json({ error: 'User not found' });
 
   try {
-    const user = await prisma.user.findUnique({
-      where: { id: userId },
-      select: { subscriptionTier: true, totalVideosAnalyzed: true, totalScripts: true }
-    });
+    const [user] = await sql`
+      SELECT 
+        subscription_tier as "subscriptionTier",
+        total_videos_analyzed as "totalVideosAnalyzed",
+        total_scripts as "totalScripts"
+      FROM users
+      WHERE id = ${userId}
+    `;
 
     if (!user) return res.status(404).json({ error: 'User not found' });
 
@@ -181,6 +182,7 @@ router.get('/plan-check', async (req, res) => {
       }
     });
   } catch (err) {
+    console.error('Plan check failed:', err);
     res.status(500).json({ error: 'Plan check failed' });
   }
 });
@@ -190,16 +192,19 @@ router.post('/auth/register', async (req, res) => {
   if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
 
   try {
-    const existing = await prisma.user.findUnique({ where: { email } });
+    const [existing] = await sql`SELECT id FROM users WHERE LOWER(email) = LOWER(${email})`;
     if (existing) return res.status(400).json({ error: 'User already exists' });
 
     const hashedPassword = await bcrypt.hash(password, 10);
-    const newUser = await prisma.user.create({
-      data: { email, password: hashedPassword, name: name || null }
-    });
+    const [newUser] = await sql`
+      INSERT INTO users (email, password, name, created_at)
+      VALUES (${email}, ${hashedPassword}, ${name || null}, NOW())
+      RETURNING id, email
+    `;
 
     res.status(201).json({ message: 'User created', user: { id: newUser.id, email: newUser.email } });
   } catch (err) {
+    console.error('Failed to create user:', err);
     res.status(500).json({ error: 'Failed to create user' });
   }
 });

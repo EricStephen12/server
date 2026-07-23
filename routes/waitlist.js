@@ -1,7 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { PrismaClient } = require('@prisma/client');
-const prisma = new PrismaClient();
+const { sql } = require('../db/index');
 const axios = require('axios');
 
 router.post('/', async (req, res) => {
@@ -13,12 +12,11 @@ router.post('/', async (req, res) => {
         }
 
         // Save to database
-        const waitlistEntry = await prisma.waitlist.create({
-            data: {
-                email: email.toLowerCase().trim(),
-                platform: platform || 'unknown',
-            },
-        });
+        const [waitlistEntry] = await sql`
+            INSERT INTO waitlist (email, platform)
+            VALUES (${email.toLowerCase().trim()}, ${platform || 'unknown'})
+            RETURNING id, email, platform, created_at
+        `;
 
         // Send a welcome email via Resend if API key exists
         if (process.env.RESEND_API_KEY) {
@@ -53,8 +51,9 @@ router.post('/', async (req, res) => {
         res.status(200).json({ success: true, message: 'Added to waitlist', entry: waitlistEntry });
     } catch (error) {
         console.error('Waitlist error:', error);
-        
-        if (error.code === 'P2002') {
+
+        // Postgres unique violation code = 23505 (replaces Prisma P2002)
+        if (error.code === '23505') {
             return res.status(400).json({ error: 'This email is already on the waitlist!' });
         }
 
