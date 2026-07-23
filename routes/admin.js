@@ -9,66 +9,167 @@ router.use(adminProtected);
 
 router.get('/stats', async (req, res) => {
     try {
-        const [userCount] = await sql`SELECT count(*) FROM users`;
-        const [scanCount] = await sql`SELECT sum(total_videos_analyzed) as total FROM users`;
-        const [waitlistCount] = await sql`SELECT count(*)::int FROM waitlist`;
+        // ── Totals ────────────────────────────────────────────────────────────
+        const [userCount]    = await sql`SELECT count(*)::int FROM users`;
+        const [scanCount]    = await sql`SELECT COALESCE(sum(total_videos_analyzed), 0)::int as total FROM users`;
+        const [waitlistCount]= await sql`SELECT count(*)::int FROM waitlist`;
+
+        // ── Plan breakdown ────────────────────────────────────────────────────
         const planBreakdown = await sql`
-            SELECT subscription_tier as plan_type, count(*) as count 
-            FROM users 
-            GROUP BY subscription_tier
+            SELECT COALESCE(subscription_tier, 'free') as plan_type, count(*)::int as count
+            FROM users
+            GROUP BY COALESCE(subscription_tier, 'free')
+            ORDER BY count DESC
         `;
 
-        // Signup counts by periods
-        const [signupsDaily] = await sql`SELECT count(*)::int FROM users WHERE created_at >= NOW() - INTERVAL '1 day'`;
-        const [signupsWeekly] = await sql`SELECT count(*)::int FROM users WHERE created_at >= NOW() - INTERVAL '7 days'`;
-        const [signupsMonthly] = await sql`SELECT count(*)::int FROM users WHERE created_at >= NOW() - INTERVAL '30 days'`;
-        const [signupsYearly] = await sql`SELECT count(*)::int FROM users WHERE created_at >= NOW() - INTERVAL '365 days'`;
+        // ── Signups — current period ──────────────────────────────────────────
+        const [signupsToday]  = await sql`SELECT count(*)::int FROM users WHERE created_at >= NOW() - INTERVAL '1 day'`;
+        const [signupsWeek]   = await sql`SELECT count(*)::int FROM users WHERE created_at >= NOW() - INTERVAL '7 days'`;
+        const [signupsMonth]  = await sql`SELECT count(*)::int FROM users WHERE created_at >= NOW() - INTERVAL '30 days'`;
+        const [signupsYear]   = await sql`SELECT count(*)::int FROM users WHERE created_at >= NOW() - INTERVAL '365 days'`;
 
-        // Revenue counts by periods
-        const [revDaily] = await sql`SELECT COALESCE(SUM(amount), 0)::int as total FROM payments WHERE created_at >= NOW() - INTERVAL '1 day'`;
-        const [revWeekly] = await sql`SELECT COALESCE(SUM(amount), 0)::int as total FROM payments WHERE created_at >= NOW() - INTERVAL '7 days'`;
-        const [revMonthly] = await sql`SELECT COALESCE(SUM(amount), 0)::int as total FROM payments WHERE created_at >= NOW() - INTERVAL '30 days'`;
-        const [revYearly] = await sql`SELECT COALESCE(SUM(amount), 0)::int as total FROM payments WHERE created_at >= NOW() - INTERVAL '365 days'`;
+        // ── Signups — previous period (for % change) ─────────────────────────
+        const [signupsPrevToday] = await sql`SELECT count(*)::int FROM users WHERE created_at >= NOW() - INTERVAL '2 days'  AND created_at < NOW() - INTERVAL '1 day'`;
+        const [signupsPrevWeek]  = await sql`SELECT count(*)::int FROM users WHERE created_at >= NOW() - INTERVAL '14 days' AND created_at < NOW() - INTERVAL '7 days'`;
+        const [signupsPrevMonth] = await sql`SELECT count(*)::int FROM users WHERE created_at >= NOW() - INTERVAL '60 days' AND created_at < NOW() - INTERVAL '30 days'`;
+        const [signupsPrevYear]  = await sql`SELECT count(*)::int FROM users WHERE created_at >= NOW() - INTERVAL '730 days'AND created_at < NOW() - INTERVAL '365 days'`;
 
-        // Recent 30 days trends
+        // ── Revenue — current period ──────────────────────────────────────────
+        const [revToday] = await sql`SELECT COALESCE(SUM(amount), 0)::bigint as total FROM payments WHERE created_at >= NOW() - INTERVAL '1 day'`;
+        const [revWeek]  = await sql`SELECT COALESCE(SUM(amount), 0)::bigint as total FROM payments WHERE created_at >= NOW() - INTERVAL '7 days'`;
+        const [revMonth] = await sql`SELECT COALESCE(SUM(amount), 0)::bigint as total FROM payments WHERE created_at >= NOW() - INTERVAL '30 days'`;
+        const [revYear]  = await sql`SELECT COALESCE(SUM(amount), 0)::bigint as total FROM payments WHERE created_at >= NOW() - INTERVAL '365 days'`;
+
+        // ── Revenue — previous period (for % change) ─────────────────────────
+        const [revPrevToday] = await sql`SELECT COALESCE(SUM(amount), 0)::bigint as total FROM payments WHERE created_at >= NOW() - INTERVAL '2 days'  AND created_at < NOW() - INTERVAL '1 day'`;
+        const [revPrevWeek]  = await sql`SELECT COALESCE(SUM(amount), 0)::bigint as total FROM payments WHERE created_at >= NOW() - INTERVAL '14 days' AND created_at < NOW() - INTERVAL '7 days'`;
+        const [revPrevMonth] = await sql`SELECT COALESCE(SUM(amount), 0)::bigint as total FROM payments WHERE created_at >= NOW() - INTERVAL '60 days' AND created_at < NOW() - INTERVAL '30 days'`;
+        const [revPrevYear]  = await sql`SELECT COALESCE(SUM(amount), 0)::bigint as total FROM payments WHERE created_at >= NOW() - INTERVAL '730 days'AND created_at < NOW() - INTERVAL '365 days'`;
+
+        // ── Scans per period ──────────────────────────────────────────────────
+        const [scansToday] = await sql`SELECT count(*)::int FROM scan_events WHERE created_at >= NOW() - INTERVAL '1 day'`;
+        const [scansWeek]  = await sql`SELECT count(*)::int FROM scan_events WHERE created_at >= NOW() - INTERVAL '7 days'`;
+        const [scansMonth] = await sql`SELECT count(*)::int FROM scan_events WHERE created_at >= NOW() - INTERVAL '30 days'`;
+        const [scansYear]  = await sql`SELECT count(*)::int FROM scan_events WHERE created_at >= NOW() - INTERVAL '365 days'`;
+
+        // Previous scans
+        const [scansPrevToday] = await sql`SELECT count(*)::int FROM scan_events WHERE created_at >= NOW() - INTERVAL '2 days'  AND created_at < NOW() - INTERVAL '1 day'`;
+        const [scansPrevWeek]  = await sql`SELECT count(*)::int FROM scan_events WHERE created_at >= NOW() - INTERVAL '14 days' AND created_at < NOW() - INTERVAL '7 days'`;
+        const [scansPrevMonth] = await sql`SELECT count(*)::int FROM scan_events WHERE created_at >= NOW() - INTERVAL '60 days' AND created_at < NOW() - INTERVAL '30 days'`;
+        const [scansPrevYear]  = await sql`SELECT count(*)::int FROM scan_events WHERE created_at >= NOW() - INTERVAL '730 days'AND created_at < NOW() - INTERVAL '365 days'`;
+
+        // ── Daily trend for sparklines (last 30 days) ─────────────────────────
         const signupTrend = await sql`
-            SELECT TO_CHAR(created_at, 'YYYY-MM-DD') as date, count(*)::int as count 
-            FROM users 
-            WHERE created_at >= NOW() - INTERVAL '30 days' 
-            GROUP BY TO_CHAR(created_at, 'YYYY-MM-DD') 
+            SELECT TO_CHAR(DATE_TRUNC('day', created_at), 'YYYY-MM-DD') as date,
+                   count(*)::int as count
+            FROM users
+            WHERE created_at >= NOW() - INTERVAL '30 days'
+            GROUP BY DATE_TRUNC('day', created_at)
             ORDER BY date ASC
         `;
 
         const revenueTrend = await sql`
-            SELECT TO_CHAR(created_at, 'YYYY-MM-DD') as date, COALESCE(SUM(amount), 0)::int as amount 
-            FROM payments 
-            WHERE created_at >= NOW() - INTERVAL '30 days' 
-            GROUP BY TO_CHAR(created_at, 'YYYY-MM-DD') 
+            SELECT TO_CHAR(DATE_TRUNC('day', created_at), 'YYYY-MM-DD') as date,
+                   COALESCE(SUM(amount), 0)::bigint as amount
+            FROM payments
+            WHERE created_at >= NOW() - INTERVAL '30 days'
+            GROUP BY DATE_TRUNC('day', created_at)
             ORDER BY date ASC
         `;
 
+        // ── Recent payments (last 10) ─────────────────────────────────────────
+        const recentPayments = await sql`
+            SELECT p.amount, p.created_at, u.name, u.email, u.subscription_tier
+            FROM payments p
+            LEFT JOIN users u ON p.user_id = u.id
+            ORDER BY p.created_at DESC
+            LIMIT 10
+        `;
+
+        // ── Recent signups (last 10) ──────────────────────────────────────────
+        const recentSignups = await sql`
+            SELECT id, name, email, subscription_tier, created_at
+            FROM users
+            ORDER BY created_at DESC
+            LIMIT 10
+        `;
+
+        // ── Helper: safe % change ─────────────────────────────────────────────
+        const pct = (curr, prev) => {
+            if (!prev || prev === 0) return curr > 0 ? 100 : 0;
+            return Math.round(((curr - prev) / prev) * 100);
+        };
+
+        const cents = (v) => Math.round((Number(v) || 0) / 100);
+
         res.json({
-            totalUsers: parseInt(userCount.count || 0),
-            totalScans: parseInt(scanCount.total || 0),
-            totalWaitlist: parseInt(waitlistCount.count || 0),
+            // Totals
+            totalUsers:    userCount.count    || 0,
+            totalScans:    scanCount.total    || 0,
+            totalWaitlist: waitlistCount.count|| 0,
+
+            // Plan mix
             planBreakdown: planBreakdown.map(p => ({
-                name: p.plan_type || 'free',
-                value: parseInt(p.count || 0)
+                name:  p.plan_type,
+                value: p.count
             })),
+
+            // Period metrics
             signups: {
-                daily: signupsDaily.count || 0,
-                weekly: signupsWeekly.count || 0,
-                monthly: signupsMonthly.count || 0,
-                yearly: signupsYearly.count || 0
+                today:   signupsToday.count  || 0,
+                weekly:  signupsWeek.count   || 0,
+                monthly: signupsMonth.count  || 0,
+                yearly:  signupsYear.count   || 0,
+                change: {
+                    today:   pct(signupsToday.count,  signupsPrevToday.count),
+                    weekly:  pct(signupsWeek.count,   signupsPrevWeek.count),
+                    monthly: pct(signupsMonth.count,  signupsPrevMonth.count),
+                    yearly:  pct(signupsYear.count,   signupsPrevYear.count),
+                }
             },
             revenue: {
-                daily: (revDaily.total || 0) / 100,
-                weekly: (revWeekly.total || 0) / 100,
-                monthly: (revMonthly.total || 0) / 100,
-                yearly: (revYearly.total || 0) / 100
+                today:   cents(revToday.total),
+                weekly:  cents(revWeek.total),
+                monthly: cents(revMonth.total),
+                yearly:  cents(revYear.total),
+                change: {
+                    today:   pct(cents(revToday.total),  cents(revPrevToday.total)),
+                    weekly:  pct(cents(revWeek.total),   cents(revPrevWeek.total)),
+                    monthly: pct(cents(revMonth.total),  cents(revPrevMonth.total)),
+                    yearly:  pct(cents(revYear.total),   cents(revPrevYear.total)),
+                }
             },
-            signupTrend: signupTrend.map(t => ({ date: t.date, count: t.count })),
-            revenueTrend: revenueTrend.map(t => ({ date: t.date, amount: t.amount / 100 }))
+            scans: {
+                today:   scansToday.count  || 0,
+                weekly:  scansWeek.count   || 0,
+                monthly: scansMonth.count  || 0,
+                yearly:  scansYear.count   || 0,
+                change: {
+                    today:   pct(scansToday.count,  scansPrevToday.count),
+                    weekly:  pct(scansWeek.count,   scansPrevWeek.count),
+                    monthly: pct(scansMonth.count,  scansPrevMonth.count),
+                    yearly:  pct(scansYear.count,   scansPrevYear.count),
+                }
+            },
+
+            // Trend sparklines
+            signupTrend:  signupTrend.map(t  => ({ date: t.date, count: t.count })),
+            revenueTrend: revenueTrend.map(t => ({ date: t.date, amount: Math.round(Number(t.amount) / 100) })),
+
+            // Activity feeds
+            recentPayments: recentPayments.map(p => ({
+                amount:   Math.round(Number(p.amount) / 100),
+                name:     p.name  || 'Unknown',
+                email:    p.email || '',
+                plan:     p.subscription_tier || 'free',
+                date:     p.created_at,
+            })),
+            recentSignups: recentSignups.map(u => ({
+                name:  u.name  || 'Anonymous',
+                email: u.email || '',
+                plan:  u.subscription_tier || 'free',
+                date:  u.created_at,
+            })),
         });
     } catch (err) {
         console.error('Failed to fetch admin stats:', err);

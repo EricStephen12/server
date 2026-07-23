@@ -367,7 +367,7 @@ async function checkLimits(inputUserId, type) {
     const userId = await resolveInternalId(inputUserId);
     if (!userId) return { allowed: true };
 
-    const [user] = await sql`SELECT subscription_tier FROM users WHERE id = ${userId}`;
+    const [user] = await sql`SELECT subscription_tier, credits_remaining FROM users WHERE id = ${userId}`;
     const tier = user?.subscription_tier || 'free';
 
     const limits = {
@@ -383,6 +383,13 @@ async function checkLimits(inputUserId, type) {
     oneMonthAgo.setDate(oneMonthAgo.getDate() - 30);
 
     if (type === 'scan') {
+      // Admin-granted bonus scans bypass the monthly cap — deduct one and allow
+      const bonusCredits = user?.credits_remaining || 0;
+      if (bonusCredits > 0) {
+        await sql`UPDATE users SET credits_remaining = credits_remaining - 1 WHERE id = ${userId}`;
+        return { allowed: true, count: 0, limit: userLimit, usedBonus: true };
+      }
+
       const [{ count }] = await sql`
         SELECT count(*)::int FROM scan_events 
         WHERE user_id = ${userId} AND created_at > ${oneMonthAgo}
@@ -400,7 +407,6 @@ async function checkLimits(inputUserId, type) {
 
     return { allowed: true };
   } catch (err) {
-
     return { allowed: true }; // Allow on error to avoid blocking users
   }
 }
