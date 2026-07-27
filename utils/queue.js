@@ -120,3 +120,28 @@ module.exports = {
   analyzeWorker,
   processAnalysisJob
 };
+
+// ── Standalone worker mode ────────────────────────────────────────────────────
+// When run directly (node utils/queue.js), keep the process alive and log ready.
+if (require.main === module) {
+  if (!process.env.REDIS_URL) {
+    console.error('[Worker] REDIS_URL is not set. Worker cannot start without Redis.');
+    process.exit(1);
+  }
+  console.log('[Worker] Eixora video analysis worker started. Waiting for jobs...');
+
+  // Keep process alive — BullMQ worker is event-driven
+  process.on('SIGTERM', async () => {
+    console.log('[Worker] SIGTERM received, closing worker...');
+    if (analyzeWorker) await analyzeWorker.close();
+    if (connection) await connection.quit();
+    process.exit(0);
+  });
+
+  process.on('SIGINT', async () => {
+    console.log('[Worker] SIGINT received, closing worker...');
+    if (analyzeWorker) await analyzeWorker.close();
+    if (connection) await connection.quit();
+    process.exit(0);
+  });
+}
