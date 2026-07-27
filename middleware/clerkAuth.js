@@ -29,6 +29,15 @@ async function requireAuth(req, res, next) {
     
     const verifiedUserId = payload.sub;
     
+    // Check if user is suspended or blocked
+    const [userStatus] = await sql`
+      SELECT status FROM users WHERE clerk_id = ${verifiedUserId}
+    `.catch(() => [null]);
+    
+    if (userStatus && (userStatus.status === 'suspended' || userStatus.status === 'blocked')) {
+      return res.status(403).json({ error: 'Account suspended. Contact support@eixora.store.' });
+    }
+    
     // Extract requested userId from body or query
     const requestedUserId = req.body?.userId || req.query?.userId;
     

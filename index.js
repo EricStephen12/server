@@ -1764,5 +1764,31 @@ function gracefulShutdown(signal) {
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
+// ── Stuck session cleanup ─────────────────────────────────────────────────────
+// Sessions stuck in "processing" for more than 15 minutes are marked failed.
+// This handles server crashes, Redis failures, and worker timeouts gracefully.
+async function cleanupStuckSessions() {
+  try {
+    const fifteenMinutesAgo = new Date(Date.now() - 15 * 60 * 1000);
+    const result = await sql`
+      UPDATE lounge_sessions
+      SET dna = '{"status":"failed","error":"Processing timed out. Please try again."}',
+          updated_at = NOW()
+      WHERE updated_at < ${fifteenMinutesAgo}
+        AND dna::text LIKE '%"status":"processing"%'
+      RETURNING id
+    `;
+    if (result.length > 0) {
+      console.log(`[Cleanup] Marked ${result.length} stuck session(s) as failed.`);
+    }
+  } catch (err) {
+    console.error('[Cleanup] Stuck session cleanup failed:', err.message);
+  }
+}
+
+// Run once on startup then every 5 minutes
+cleanupStuckSessions();
+setInterval(cleanupStuckSessions, 5 * 60 * 1000);
+
 // Tell PM2 the app is ready (used with wait_ready: true in ecosystem.config.js)
 if (process.send) process.send('ready');

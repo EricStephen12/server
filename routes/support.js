@@ -21,7 +21,7 @@ router.post('/submit', async (req, res) => {
             try {
                 // 1. Notify Eixora Support (hello@eixora.store)
                 await axios.post('https://api.resend.com/emails', {
-                    from: 'Eixora <@eixora.store>',
+                    from: 'Eixora Support <hello@eixora.store>',
                     to: 'hello@eixora.store',
                     subject: `[Support Ticket] ${subject}`,
                     html: `

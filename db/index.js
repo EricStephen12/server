@@ -12,11 +12,11 @@ if (!connectionString) {
 
 const sql = postgres(connectionString, {
     ssl: 'require',
-    max: 20,              // Increased pool size for high traffic
-    idle_timeout: 30,     // Close idle connections after 30s
+    max: process.env.NODE_ENV === 'production' ? 10 : 5,  // Neon paid: 10, free: 5
+    idle_timeout: 20,          // Close idle connections faster to save Neon quota
     connect_timeout: 30,
-    max_lifetime: 1800,   // Recycle connections every 30 min
-    prepare: false,       // Required for Neon serverless/pgBouncer compatibility
+    max_lifetime: 1800,        // Recycle connections every 30 min
+    prepare: false,            // Required for Neon serverless/pgBouncer compatibility
 });
 
 

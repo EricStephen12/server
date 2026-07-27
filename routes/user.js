@@ -16,7 +16,8 @@ router.get('/me', async (req, res) => {
     const token = authHeader.split(' ')[1];
     try {
       const jwt = require('jsonwebtoken');
-      const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback_secret_66723');
+      if (!process.env.JWT_SECRET) throw new Error('JWT_SECRET not configured');
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
       if (decoded && decoded.role === 'master_admin') {
         return res.json({
           id: '00000000-0000-0000-0000-000000000000',
@@ -34,8 +35,27 @@ router.get('/me', async (req, res) => {
         });
       }
     } catch (err) {
-      // Ignore and proceed
+      // Not a master admin JWT — validate as Clerk token below
     }
+
+    // Validate Clerk token and enforce that the requested userId matches the token
+    try {
+      const { verifyToken } = require('@clerk/backend');
+      const payload = await verifyToken(token, { secretKey: process.env.CLERK_SECRET_KEY });
+      const clerkUserId = payload.sub;
+
+      let userId = req.query.userId;
+      // If the requested userId is a UUID it may already be resolved — allow it
+      // Otherwise it must match the clerk ID from the token
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (!uuidRegex.test(userId) && userId !== clerkUserId) {
+        return res.status(403).json({ error: 'Forbidden: token does not match requested user' });
+      }
+    } catch (err) {
+      return res.status(401).json({ error: 'Unauthorized: invalid token' });
+    }
+  } else {
+    return res.status(401).json({ error: 'Unauthorized: missing token' });
   }
 
   let userId = req.query.userId;
@@ -63,6 +83,18 @@ router.get('/me', async (req, res) => {
 
     if (!user) return res.status(404).json({ error: 'User not found' });
 
+    // Monthly usage — count scan_events rows in last 30 days
+    const oneMonthAgo = new Date();
+    oneMonthAgo.setDate(oneMonthAgo.getDate() - 30);
+    const [{ count: monthlyScans }] = await sql`
+      SELECT count(*)::int FROM scan_events
+      WHERE user_id = ${userId} AND created_at > ${oneMonthAgo}
+    `.catch(() => [{ count: 0 }]);
+    const [{ count: monthlyScripts }] = await sql`
+      SELECT count(*)::int FROM scripts
+      WHERE user_id = ${userId} AND created_at > ${oneMonthAgo}
+    `.catch(() => [{ count: 0 }]);
+
     // Normalize tier
     let tier = user.subscriptionTier || 'free';
     if (tier === 'agency') tier = 'studio';
@@ -88,8 +120,8 @@ router.get('/me', async (req, res) => {
       created_at: user.createdAt,
       is_admin: userIsAdmin,
       monthly_usage: {
-        scans: user.totalVideosAnalyzed || 0,
-        scripts: user.totalScripts || 0
+        scans: monthlyScans ?? 0,
+        scripts: monthlyScripts ?? 0
       }
     });
   } catch (err) {
@@ -99,6 +131,19 @@ router.get('/me', async (req, res) => {
 });
 
 router.patch('/me', async (req, res) => {
+  // Verify Clerk token before allowing profile updates
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'Unauthorized: missing token' });
+  }
+  try {
+    const { verifyToken } = require('@clerk/backend');
+    const token = authHeader.split(' ')[1];
+    await verifyToken(token, { secretKey: process.env.CLERK_SECRET_KEY });
+  } catch (err) {
+    return res.status(401).json({ error: 'Unauthorized: invalid token' });
+  }
+
   let { userId, name, email, onboarding_completed, brand_niche, primary_goal, source } = req.body;
   if (!userId) return res.status(400).json({ error: 'User ID required' });
 
