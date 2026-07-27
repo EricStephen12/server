@@ -374,8 +374,8 @@ async function checkLimits(inputUserId, type) {
     const limits = {
       free: 3,
       creator: 30,
-      studio: 250,
-      agency: 250 // Legacy — treated same as studio
+      studio: 100,   // was 250 — reduced to match new $29 pricing
+      agency: 100    // Legacy — treated same as studio
     };
 
     const userLimit = limits[tier] ?? 0;

@@ -7,7 +7,7 @@ const { resolveInternalId } = require('../utils/userResolver');
 const router = express.Router();
 
 // Simple plan limits
-const PLAN_LIMITS = { free: 3, creator: 30, studio: 250, agency: 250, founding: 30 };
+const PLAN_LIMITS = { free: 3, creator: 30, studio: 100, agency: 100, founding: 30 };
 
 router.get('/me', async (req, res) => {
   // Check if it's the custom JWT master admin token
