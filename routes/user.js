@@ -83,16 +83,26 @@ router.get('/me', async (req, res) => {
 
     if (!user) return res.status(404).json({ error: 'User not found' });
 
-    // Monthly usage — count scan_events rows in last 30 days
-    const oneMonthAgo = new Date();
-    oneMonthAgo.setDate(oneMonthAgo.getDate() - 30);
+    // Monthly usage — count scan_events since the start of the current billing cycle.
+    // Billing cycle resets monthly from the user's subscription_start_date (or created_at).
+    // This matches how Stripe/Polar billing works — same day each month, not a rolling 30 days.
+    const cycleAnchor = new Date(user.createdAt || new Date());
+    const now = new Date();
+
+    // Find the most recent billing cycle start (same day of month as anchor, in current/previous month)
+    const cycleStart = new Date(now.getFullYear(), now.getMonth(), cycleAnchor.getDate());
+    if (cycleStart > now) {
+      // We're before this month's reset day — use last month's reset
+      cycleStart.setMonth(cycleStart.getMonth() - 1);
+    }
+
     const [{ count: monthlyScans }] = await sql`
       SELECT count(*)::int FROM scan_events
-      WHERE user_id = ${userId} AND created_at > ${oneMonthAgo}
+      WHERE user_id = ${userId} AND created_at >= ${cycleStart}
     `.catch(() => [{ count: 0 }]);
     const [{ count: monthlyScripts }] = await sql`
       SELECT count(*)::int FROM scripts
-      WHERE user_id = ${userId} AND created_at > ${oneMonthAgo}
+      WHERE user_id = ${userId} AND created_at >= ${cycleStart}
     `.catch(() => [{ count: 0 }]);
 
     // Normalize tier
@@ -100,7 +110,8 @@ router.get('/me', async (req, res) => {
     if (tier === 'agency') tier = 'studio';
     if (tier === 'founding') tier = 'creator';
 
-    const ADMIN_EMAILS = ['deamirclothingstores@gmail.com', 'hello@eixora.store'];
+const { ADMIN_EMAILS } = require('../utils/adminEmails');
+
     const userIsAdmin = ADMIN_EMAILS.includes((user.email || '').toLowerCase());
 
     res.json({
@@ -121,7 +132,9 @@ router.get('/me', async (req, res) => {
       is_admin: userIsAdmin,
       monthly_usage: {
         scans: monthlyScans ?? 0,
-        scripts: monthlyScripts ?? 0
+        scripts: monthlyScripts ?? 0,
+        cycle_start: cycleStart.toISOString(),
+        cycle_reset_day: cycleAnchor.getDate(), // day of month the count resets
       }
     });
   } catch (err) {

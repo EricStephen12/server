@@ -1,8 +1,7 @@
 const { verifyToken } = require('@clerk/backend');
 const { sql } = require('../db/index');
 const { resolveInternalId } = require('../utils/userResolver');
-
-const ADMIN_EMAILS = ['deamirclothingstores@gmail.com', 'hello@eixora.store'];
+const { ADMIN_EMAILS } = require('../utils/adminEmails');
 
 async function adminProtected(req, res, next) {
     // 1. Extract Bearer token from Authorization header

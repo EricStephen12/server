@@ -1,4 +1,5 @@
 const { sql } = require('../db/index');
+const { sendWelcomeEmail } = require('./emails');
 
 async function resolveInternalId(id, clerkInfo = null) {
   if (!id) return null;
@@ -52,6 +53,14 @@ async function resolveInternalId(id, clerkInfo = null) {
       VALUES (${id}, ${email}, ${name}, 'free', ${new Date()})
       RETURNING id
     `;
+
+    // Send welcome email to new users (non-blocking)
+    if (email) {
+      sendWelcomeEmail({ name, email }).catch(err =>
+        console.error('[Welcome Email] Failed:', err.message)
+      );
+    }
+
     return newUser.id;
   } catch (err) {
     console.error('Error in resolveInternalId:', err);

@@ -33,6 +33,7 @@ const { sanitizeVideoUrl } = require('./utils/sanitize');
 const { enqueueVideoJob, getQueueStats } = require('./utils/videoQueue');
 const { getCachedAnalysis, setCachedAnalysis, getCacheStats } = require('./utils/analysisCache');
 const { analyzeQueue, processAnalysisJob } = require('./utils/queue');
+const { sendUpgradeNudgeEmail } = require('./utils/emails');
 
 process.on('unhandledRejection', (reason, promise) => {
     console.error('Unhandled Rejection at:', promise, 'reason:', reason);
@@ -379,8 +380,13 @@ async function checkLimits(inputUserId, type) {
 
     const userLimit = limits[tier] ?? 0;
 
-    const oneMonthAgo = new Date();
-    oneMonthAgo.setDate(oneMonthAgo.getDate() - 30);
+    // Billing cycle start — same day of month as account creation (matches Polar/Stripe behavior)
+    const cycleAnchor = new Date(user.created_at || new Date());
+    const now = new Date();
+    const cycleStart = new Date(now.getFullYear(), now.getMonth(), cycleAnchor.getDate());
+    if (cycleStart > now) {
+      cycleStart.setMonth(cycleStart.getMonth() - 1);
+    }
 
     if (type === 'scan') {
       // Admin-granted bonus scans bypass the monthly cap — deduct one and allow
@@ -392,15 +398,33 @@ async function checkLimits(inputUserId, type) {
 
       const [{ count }] = await sql`
         SELECT count(*)::int FROM scan_events 
-        WHERE user_id = ${userId} AND created_at > ${oneMonthAgo}
+        WHERE user_id = ${userId} AND created_at >= ${cycleStart}
       `;
+
+      // Fire upgrade nudge email at 80% usage (once per cycle) — non-blocking
+      const pct = userLimit > 0 ? count / userLimit : 0;
+      if (pct >= 0.8 && pct < 1 && tier !== 'studio') {
+        try {
+          const [userData] = await sql`SELECT email, name FROM users WHERE id = ${userId}`;
+          if (userData?.email) {
+            sendUpgradeNudgeEmail({
+              name: userData.name,
+              email: userData.email,
+              scansUsed: count,
+              scanLimit: userLimit,
+              plan: tier
+            }).catch(() => {});
+          }
+        } catch (_) {}
+      }
+
       return { allowed: count < userLimit, count, limit: userLimit };
     }
 
     if (type === 'script') {
       const [{ count }] = await sql`
         SELECT count(*)::int FROM scripts 
-        WHERE user_id = ${userId} AND created_at > ${oneMonthAgo}
+        WHERE user_id = ${userId} AND created_at >= ${cycleStart}
       `;
       return { allowed: count < userLimit, count, limit: userLimit };
     }
@@ -629,6 +653,14 @@ app.post('/api/analyze', requireAuth, requireOwnership, scanLimiter, express.jso
       maxLength
     };
 
+    // Insert a scan_event immediately to prevent race condition where user
+    // clicks analyze multiple times before any job completes
+    try {
+      await sql`INSERT INTO scan_events (user_id, created_at) VALUES (${userId}, NOW())`;
+    } catch (scanEventErr) {
+      console.error('[Analyze] Failed to insert scan_event:', scanEventErr.message);
+    }
+
     try {
       await analyzeQueue.add('analyze-video', jobData);
     } catch (queueErr) {
@@ -703,6 +735,13 @@ app.post('/api/product-intel', requireAuth, requireOwnership, scanLimiter, expre
       maxLength,
       plan
     };
+
+    // Insert scan_event immediately to prevent race condition
+    try {
+      await sql`INSERT INTO scan_events (user_id, created_at) VALUES (${userId}, NOW())`;
+    } catch (scanEventErr) {
+      console.error('[Product Intel] Failed to insert scan_event:', scanEventErr.message);
+    }
 
     try {
       await analyzeQueue.add('analyze-video', jobData);

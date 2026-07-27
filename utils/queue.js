@@ -20,13 +20,14 @@ if (process.env.REDIS_URL) {
 }
 
 async function processAnalysisJob(data) {
-  const { sessionId, userId, originalUrl, niche, mode, maxFrames, maxLength, plan } = data;
+  const { sessionId, userId, originalUrl, localFilePath, niche, mode, maxFrames, maxLength, plan } = data;
   console.log(`[Worker] Started processing analysis job for session ${sessionId}...`);
 
   try {
-    // 1. Download and extract frames on the backend
-    console.log(`[Worker] Extracting up to ${maxFrames} frames from ${originalUrl}...`);
-    const { frames, duration } = await extractFramesBackend(originalUrl, maxFrames);
+    // 1. Extract frames — handle both URL-based and local file uploads
+    console.log(`[Worker] Extracting up to ${maxFrames} frames...`);
+    const sourceUrl = localFilePath || originalUrl;
+    const { frames, duration } = await extractFramesBackend(sourceUrl, maxFrames);
     
     // 2. Validate duration limits
     if (duration > maxLength) {
@@ -41,11 +42,10 @@ async function processAnalysisJob(data) {
       analysis = await analyzeVideoFrames(frames, 'Mobile Analysis', '', null, mode || 'ad', plan || 'free');
     }
     
-    // Update stats
+    // Update all-time total counter (scan_events is already inserted upfront to prevent race conditions)
     if (userId) {
       try {
         await sql`UPDATE users SET total_videos_analyzed = total_videos_analyzed + 1 WHERE id = ${userId}`;
-        await sql`INSERT INTO scan_events (user_id, created_at) VALUES (${userId}, NOW())`;
       } catch (err) {
         console.error('[Worker] Failed to update user stats:', err);
       }
@@ -85,14 +85,30 @@ async function processAnalysisJob(data) {
         WHERE id = ${sessionId}
     `;
     throw analyzeErr; // Mark job as failed in BullMQ dashboard
+  } finally {
+    // Clean up the uploaded file after processing (success or failure)
+    // URL-based scans are cleaned up inside extractFramesBackend already
+    if (localFilePath) {
+      try {
+        const fs = require('fs');
+        if (fs.existsSync(localFilePath)) {
+          fs.unlinkSync(localFilePath);
+          console.log(`[Worker] Cleaned up uploaded file: ${localFilePath}`);
+        }
+      } catch (cleanupErr) {
+        console.error('[Worker] Failed to clean up uploaded file:', cleanupErr.message);
+      }
+    }
   }
 }
 
 if (connection) {
-  // Worker setup
+  // Worker setup — limit concurrency to prevent server OOM under load.
+  // 3 concurrent jobs = max ~3 ffmpeg processes at once.
+  // Increase to 5 on a dedicated worker server with 2GB+ RAM.
   analyzeWorker = new Worker('analyze-video-queue', async job => {
     await processAnalysisJob(job.data);
-  }, { connection });
+  }, { connection, concurrency: 3 });
 
   analyzeWorker.on('failed', (job, err) => {
     console.error(`[Worker] Job ${job?.id} failed with error ${err.message}`);

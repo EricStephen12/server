@@ -1,12 +1,71 @@
 const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
+const { execFile } = require('child_process');
 const ffmpeg = require('fluent-ffmpeg');
 const ffmpegStatic = require('ffmpeg-static');
 const ffprobeStatic = require('@ffprobe-installer/ffprobe');
 if (ffmpegStatic) ffmpeg.setFfmpegPath(ffmpegStatic);
 if (ffprobeStatic.path) ffmpeg.setFfprobePath(ffprobeStatic.path);
 const crypto = require('crypto');
+
+// yt-dlp path — bundled exe on Windows, system binary on Linux (Railway)
+const YTDLP_PATH = process.platform === 'win32'
+  ? path.join(__dirname, '../yt-dlp.exe')
+  : 'yt-dlp'; // must be installed on the Railway server: apt-get install yt-dlp
+
+/**
+ * Resolve a social video URL to a direct MP4 stream URL.
+ * Tries tikwm first (fast, free), falls back to yt-dlp if tikwm fails.
+ */
+async function resolveVideoUrl(url, videoPath) {
+  const isTikTok   = url.includes('tiktok.com');
+  const isReels    = url.includes('instagram.com');
+  const isShorts   = url.includes('youtube.com/shorts') || url.includes('youtu.be');
+  const isFacebook = url.includes('facebook.com') || url.includes('fb.watch');
+
+  // ── tikwm for TikTok (fastest) ────────────────────────────────────────────
+  if (isTikTok) {
+    try {
+      const cleanUrl = url.split('?')[0];
+      const res = await axios.post('https://tikwm.com/api/',
+        new URLSearchParams({ url: cleanUrl, hd: '1' }),
+        { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, timeout: 10000 }
+      );
+      const play = res.data?.data?.hdplay || res.data?.data?.play;
+      if (play) {
+        console.log('[Resolver] tikwm resolved TikTok URL');
+        return { type: 'url', value: play };
+      }
+      console.warn('[Resolver] tikwm returned no URL, falling back to yt-dlp');
+    } catch (err) {
+      console.warn('[Resolver] tikwm failed:', err.message, '— falling back to yt-dlp');
+    }
+  }
+
+  // ── yt-dlp fallback for all platforms ─────────────────────────────────────
+  // Downloads directly to videoPath and returns the file path
+  try {
+    await new Promise((resolve, reject) => {
+      execFile(YTDLP_PATH, [
+        url,
+        '--output', videoPath,
+        '--format', 'mp4/best[ext=mp4]/best',
+        '--no-playlist',
+        '--socket-timeout', '30',
+        '--retries', '3',
+        '-q', // quiet
+      ], { timeout: 120000 }, (err, stdout, stderr) => {
+        if (err) reject(new Error(`yt-dlp failed: ${stderr || err.message}`));
+        else resolve();
+      });
+    });
+    console.log('[Resolver] yt-dlp downloaded video successfully');
+    return { type: 'file', value: videoPath };
+  } catch (err) {
+    throw new Error(`All resolvers failed for ${url}: ${err.message}`);
+  }
+}
 
 /**
  * Download a remote video, extract keyframes, and clean up.
@@ -25,40 +84,42 @@ async function extractFramesBackend(url, maxFrames = 5) {
   const framesDir = path.join(tmpDir, `frames_${fileId}`);
   fs.mkdirSync(framesDir, { recursive: true });
 
+  // Track whether we need to download or already have the file
+  let videoReady = false;
+
+  // Handle local file paths (manual uploads)
+  if (!url.startsWith('http') && fs.existsSync(url)) {
+    // Already a local file — copy to our tmp path for consistent cleanup
+    fs.copyFileSync(url, videoPath);
+    videoReady = true;
+  }
+
   try {
-    let finalUrl = url;
+    if (!videoReady) {
+      // Resolve and download the video
+      const resolved = await resolveVideoUrl(url, videoPath);
 
-    // Resolve TikTok URLs to raw MP4 streams using tikwm
-    if (url.includes('tiktok.com')) {
-      const cleanUrl = url.split('?')[0];
-      const tikwmRes = await axios.post('https://tikwm.com/api/',
-        new URLSearchParams({ url: cleanUrl }),
-        { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
-      );
-      if (tikwmRes.data?.data?.play) {
-         finalUrl = tikwmRes.data.data.play;
-      } else {
-         throw new Error('Failed to resolve TikTok video stream');
+      if (resolved.type === 'url') {
+        // tikwm gave us a direct URL — download it
+        const dlRes = await axios({
+          method: 'get',
+          url: resolved.value,
+          responseType: 'stream',
+          timeout: 90000,
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Referer': 'https://www.tiktok.com/',
+          }
+        });
+        const writer = fs.createWriteStream(videoPath);
+        dlRes.data.pipe(writer);
+        await new Promise((resolve, reject) => {
+          writer.on('finish', resolve);
+          writer.on('error', reject);
+        });
       }
+      // If resolved.type === 'file', yt-dlp already wrote to videoPath
     }
-
-    // 1. Download video
-    const dlRes = await axios({
-      method: 'get',
-      url: finalUrl,
-      responseType: 'stream',
-      timeout: 60000,
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-      }
-    });
-
-    const writer = fs.createWriteStream(videoPath);
-    dlRes.data.pipe(writer);
-    await new Promise((resolve, reject) => {
-      writer.on('finish', resolve);
-      writer.on('error', reject);
-    });
 
     // 2. Get duration
     console.log(`[Extractor] Running ffprobe on ${videoPath}...`);
@@ -66,7 +127,7 @@ async function extractFramesBackend(url, maxFrames = 5) {
       ffmpeg.ffprobe(videoPath, (err, data) => err ? reject(err) : resolve(data));
     });
     console.log(`[Extractor] ffprobe complete.`);
-    
+
     let duration = metadata.format?.duration || 0;
     if (duration <= 0) {
       throw new Error("Could not determine video duration");
@@ -76,8 +137,7 @@ async function extractFramesBackend(url, maxFrames = 5) {
     const timestamps = [];
     const step = duration / maxFrames;
     for (let i = 0; i < maxFrames; i++) {
-      let t = i * step;
-      timestamps.push(Number(t.toFixed(2))); // e.g., 0.00, 2.50
+      timestamps.push(Number((i * step).toFixed(2)));
     }
 
     console.log(`[Extractor] Starting frame extraction loop for timestamps:`, timestamps);
@@ -93,8 +153,8 @@ async function extractFramesBackend(url, maxFrames = 5) {
           .output(path.join(framesDir, `frame-at-${t}-seconds.jpg`))
           .on('end', resolve)
           .on('error', (err, stdout, stderr) => {
-             console.error(`ffmpeg error at ${t}s:`, stderr);
-             reject(err);
+            console.error(`ffmpeg error at ${t}s:`, stderr);
+            reject(err);
           })
           .run();
       });
@@ -103,36 +163,25 @@ async function extractFramesBackend(url, maxFrames = 5) {
     // 4. Read frames into Base64 format
     const frames = [];
     const files = fs.readdirSync(framesDir).filter(f => f.endsWith('.jpg'));
-    
-    // Sort files logically by parsing the second value
+
     files.sort((a, b) => {
-      const matchA = a.match(/frame-at-([\d.]+)-seconds/);
-      const matchB = b.match(/frame-at-([\d.]+)-seconds/);
-      const timeA = matchA ? parseFloat(matchA[1]) : 0;
-      const timeB = matchB ? parseFloat(matchB[1]) : 0;
+      const timeA = parseFloat(a.match(/frame-at-([\d.]+)-seconds/)?.[1] || '0');
+      const timeB = parseFloat(b.match(/frame-at-([\d.]+)-seconds/)?.[1] || '0');
       return timeA - timeB;
     });
 
     for (const file of files) {
       const filePath = path.join(framesDir, file);
-      const match = file.match(/frame-at-([\d.]+)-seconds/);
-      const timestamp = match ? parseFloat(match[1]) : 0;
-      
-      const buffer = fs.readFileSync(filePath);
-      const base64 = buffer.toString('base64');
-      
+      const timestamp = parseFloat(file.match(/frame-at-([\d.]+)-seconds/)?.[1] || '0');
+      const base64 = fs.readFileSync(filePath).toString('base64');
+
       let phase = 'middle';
       if (timestamp < 3) phase = 'hook';
       else if (timestamp > duration - 5) phase = 'cta';
       else if (timestamp < duration * 0.4) phase = 'problem_setup';
       else phase = 'solution';
 
-      frames.push({
-        timestamp,
-        base64,
-        mimeType: 'image/jpeg',
-        phase
-      });
+      frames.push({ timestamp, base64, mimeType: 'image/jpeg', phase });
     }
 
     return { frames, duration };
@@ -144,10 +193,7 @@ async function extractFramesBackend(url, maxFrames = 5) {
     try {
       if (fs.existsSync(videoPath)) fs.unlinkSync(videoPath);
       if (fs.existsSync(framesDir)) {
-        const files = fs.readdirSync(framesDir);
-        for (const file of files) {
-          fs.unlinkSync(path.join(framesDir, file));
-        }
+        fs.readdirSync(framesDir).forEach(f => fs.unlinkSync(path.join(framesDir, f)));
         fs.rmdirSync(framesDir);
       }
     } catch (cleanupErr) {
