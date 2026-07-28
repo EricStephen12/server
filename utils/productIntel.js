@@ -7,7 +7,7 @@ const VISION_MODELS = {
   free:    'qwen/qwen3-vl-32b-instruct',  // Fallback
 };
 
-async function identifyProduct(frames, plan = 'free') {
+async function identifyProduct(frames, plan = 'free', transcript = '') {
   if (!process.env.OPENROUTER_API_KEY) {
     throw new Error('OpenRouter API Key is missing for Product Identification');
   }
@@ -29,8 +29,12 @@ async function identifyProduct(frames, plan = 'free') {
 
   const keyFrames = selectKeyFrames(frames);
 
+  const transcriptHint = transcript
+    ? `\n\nAUDIO TRANSCRIPT (what is spoken in the video): "${transcript}"\nUse this to confirm or refine what you see visually. If the speaker mentions a specific product name, brand, or material, that takes priority over visual inference.`
+    : '';
+
   const systemPrompt = `You are a product sourcing expert and market analyst.
-Your only job is to look at these video frames and identify the physical product or digital service being shown or sold.
+Your only job is to look at these video frames and identify the physical product or digital service being shown or sold.${transcriptHint}
 
 Output valid JSON ONLY. No markdown formatting, no backticks, no explanations.
 
@@ -152,15 +156,20 @@ async function performMarketResearch(productData) {
 }
 
 // Final pipeline function
-async function generateProductIntel(frames, originalUrl, plan = 'free') {
+async function generateProductIntel(frames, originalUrl, plan = 'free', transcript = '') {
     console.log('[Product Intel] Step 1: Identifying Product...');
-    const productData = await identifyProduct(frames, plan);
+    const productData = await identifyProduct(frames, plan, transcript);
     console.log('[Product Intel] Product Identified:', productData.productName);
     
     console.log('[Product Intel] Step 2: Running Market Research...');
     const marketResearch = await performMarketResearch(productData);
     
     console.log('[Product Intel] Step 3: Final Intelligence Generation...');
+    
+    // Include transcript context in the system prompt when available
+    const transcriptSection = transcript
+      ? `\n\n- Audio Transcript (what is SPOKEN in the video): "${transcript}"\n  NOTE: The transcript often contains the actual product name, brand, price claims, and target customer language. Prioritize this over visual inference when there is any ambiguity.`
+      : '';
     
     const systemPrompt = `You are the most expensive product sourcing consultant in ecommerce. You charge $5,000 for a single product evaluation. Serious dropshippers and brand owners pay because you tell them the truth before they waste money on inventory and ads — not what they want to hear.
 
@@ -173,7 +182,7 @@ YOU ARE EVALUATING A PRODUCT shown in a video, combined with real market researc
 INPUTS PROVIDED:
 - Web search results covering: competitor/seller saturation, search trend direction, price range across sellers, any available review sentiment
 - Original Product Data: ${JSON.stringify(productData)}
-- Market Research Data: ${marketResearch}
+- Market Research Data: ${marketResearch}${transcriptSection}
 
 YOUR ANALYSIS MUST BE HYPER-SPECIFIC. Reference exact data points from the search results — actual numbers, actual competitor counts, actual trend directions. Never state a saturation or trend claim without citing what specifically supports it.
 
@@ -277,6 +286,7 @@ Output as JSON ONLY matching this EXACT structure:
             productName: productData.productName,
             category: productData.category,
             visualAttributes: productData.visualAttributes,
+            transcript: transcript || null,
             raw_market_research: marketResearch,
             ...finalIntel
         };

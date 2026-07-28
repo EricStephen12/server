@@ -203,3 +203,34 @@ async function extractFramesBackend(url, maxFrames = 5) {
 }
 
 module.exports = { extractFramesBackend };
+
+/**
+ * Extract audio from a video file as an MP3 for Whisper transcription.
+ * Used specifically for Product Intelligence mode to disambiguate similar products.
+ * @param {string} videoPath - Path to the local video file
+ * @returns {Promise<string>} - Path to the extracted audio file
+ */
+async function extractAudioFromVideo(videoPath) {
+  const audioPath = videoPath.replace(/\.[^/.]+$/, '') + '_audio.mp3';
+
+  await new Promise((resolve, reject) => {
+    ffmpeg(videoPath)
+      .noVideo()
+      .audioCodec('libmp3lame')
+      .audioBitrate('64k')       // Low bitrate — speech only, save bandwidth
+      .audioChannels(1)           // Mono — sufficient for transcription
+      .audioFrequency(16000)      // 16kHz — Whisper's native sample rate
+      .duration(120)              // Cap at 2 min — enough for product ID
+      .output(audioPath)
+      .on('end', resolve)
+      .on('error', (err) => {
+        console.error('[AudioExtractor] ffmpeg error:', err.message);
+        reject(err);
+      })
+      .run();
+  });
+
+  return audioPath;
+}
+
+module.exports = { extractFramesBackend, extractAudioFromVideo };

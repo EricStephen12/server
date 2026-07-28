@@ -2,7 +2,8 @@ const { Queue, Worker } = require('bullmq');
 const Redis = require('ioredis');
 const { analyzeVideoFrames } = require('./visionAnalyzer');
 const { generateProductIntel } = require('./productIntel');
-const { extractFramesBackend } = require('./videoExtractor');
+const { extractFramesBackend, extractAudioFromVideo } = require('./videoExtractor');
+const { transcribeAudio } = require('./audioTranscriber');
 const { sql } = require('../db/index');
 
 let connection = null;
@@ -37,7 +38,62 @@ async function processAnalysisJob(data) {
     // 3. Run the actual analysis — route model by user's plan and mode
     let analysis;
     if (mode === 'product-intel') {
-      analysis = await generateProductIntel(frames, originalUrl, plan || 'free');
+      // For product intel, also transcribe audio — spoken words disambiguate visually similar products
+      let transcript = '';
+      const videoFilePath = localFilePath || null;
+
+      if (videoFilePath) {
+        // Uploaded file — extract audio directly
+        try {
+          console.log('[Worker] Extracting audio for product intel transcription...');
+          const audioPath = await extractAudioFromVideo(videoFilePath);
+          transcript = await transcribeAudio(audioPath);
+          console.log(`[Worker] Transcript (${transcript.length} chars) ready for product intel`);
+        } catch (audioErr) {
+          console.warn('[Worker] Audio transcription failed (non-fatal):', audioErr.message);
+        }
+      } else {
+        // URL-based — video was already deleted after frame extraction.
+        // Re-download just the audio track via yt-dlp (much faster than full video).
+        try {
+          const fs = require('fs');
+          const path = require('path');
+          const crypto = require('crypto');
+          const { execFile } = require('child_process');
+          const YTDLP_PATH = process.platform === 'win32'
+            ? path.join(__dirname, '../yt-dlp.exe')
+            : 'yt-dlp';
+          const tmpAudioPath = path.join(__dirname, '../uploads/tmp', `audio_${crypto.randomBytes(6).toString('hex')}.mp3`);
+
+          console.log('[Worker] Downloading audio-only for product intel transcription...');
+          await new Promise((resolve, reject) => {
+            execFile(YTDLP_PATH, [
+              originalUrl,
+              '--output', tmpAudioPath,
+              '--format', 'bestaudio[ext=m4a]/bestaudio/best',
+              '--extract-audio',
+              '--audio-format', 'mp3',
+              '--audio-quality', '5',          // Low quality, speech only
+              '--no-playlist',
+              '--socket-timeout', '20',
+              '--postprocessor-args', 'ffmpeg:-t 120',  // Cap at 2 min
+              '-q',
+            ], { timeout: 60000 }, (err, stdout, stderr) => {
+              if (err) reject(new Error(`yt-dlp audio failed: ${stderr || err.message}`));
+              else resolve();
+            });
+          });
+
+          if (fs.existsSync(tmpAudioPath)) {
+            transcript = await transcribeAudio(tmpAudioPath);
+            console.log(`[Worker] Transcript (${transcript.length} chars) ready for product intel`);
+          }
+        } catch (audioErr) {
+          console.warn('[Worker] Audio-only download/transcription failed (non-fatal):', audioErr.message);
+        }
+      }
+
+      analysis = await generateProductIntel(frames, originalUrl, plan || 'free', transcript);
     } else {
       analysis = await analyzeVideoFrames(frames, 'Mobile Analysis', '', null, mode || 'ad', plan || 'free');
     }
