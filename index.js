@@ -26,6 +26,7 @@ const revenuecatWebhooks = require('./routes/revenuecat');
 const polarWebhooks = require('./routes/polar');
 const userRouter = require('./routes/user');
 const waitlistRouter = require('./routes/waitlist');
+const axios = require('axios');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const { requireAuth, requireOwnership } = require('./middleware/clerkAuth');
@@ -34,6 +35,35 @@ const { enqueueVideoJob, getQueueStats } = require('./utils/videoQueue');
 const { getCachedAnalysis, setCachedAnalysis, getCacheStats } = require('./utils/analysisCache');
 const { analyzeQueue, processAnalysisJob } = require('./utils/queue');
 const { sendUpgradeNudgeEmail } = require('./utils/emails');
+const { transcribeAudio } = require('./utils/audioTranscriber');
+const { useOpenAiTts, synthesizeOpenAiSpeech } = require('./utils/openaiTts');
+const fs = require('fs');
+const http = require('http');
+const https = require('https');
+
+const TTS_ENGINE_URL = process.env.TTS_ENGINE_URL || 'http://localhost:8100';
+const TTS_ENGINE_API_KEY = process.env.TTS_ENGINE_API_KEY || '';
+// ~2 minutes of synthesized audio; mirrors the cap in the web client's TTS proxy route
+const TTS_MAX_TEXT_LENGTH = 2000;
+
+// Keep TCP connections warm to Railway Kokoro — kills cold-handshake lag between turns
+const ttsHttpAgent = TTS_ENGINE_URL.startsWith('https')
+  ? new https.Agent({ keepAlive: true, maxSockets: 8, keepAliveMsecs: 60_000 })
+  : new http.Agent({ keepAlive: true, maxSockets: 8, keepAliveMsecs: 60_000 });
+
+function warmKokoroEngine() {
+  const url = `${TTS_ENGINE_URL.replace(/\/$/, '')}/health`;
+  axios
+    .get(url, { timeout: 12_000, httpAgent: ttsHttpAgent, httpsAgent: ttsHttpAgent })
+    .then((r) => {
+      if (r.data?.model_loaded) {
+        console.log('[TTS] Kokoro warm OK');
+      }
+    })
+    .catch((err) => {
+      console.warn('[TTS] Kokoro warm ping failed:', err.message);
+    });
+}
 
 process.on('unhandledRejection', (reason, promise) => {
     console.error('Unhandled Rejection at:', promise, 'reason:', reason);
@@ -65,6 +95,30 @@ const upload = multer({
     }
   }
 });
+
+// Voice Lounge mic clips (MediaRecorder → Groq Whisper)
+const audioUpload = multer({
+  dest: uploadsDir,
+  limits: { fileSize: 12 * 1024 * 1024 }, // 12MB — ~2 min of webm/opus
+  fileFilter: (req, file, cb) => {
+    const type = (file.mimetype || '').toLowerCase();
+    const ok =
+      type.startsWith('audio/') ||
+      type === 'video/webm' || // Chrome often labels audio-only recordings this way
+      type === 'application/octet-stream';
+    if (ok) cb(null, true);
+    else cb(new Error('Only audio recordings are allowed'));
+  },
+});
+
+function audioExtensionForMime(mime) {
+  const type = (mime || '').toLowerCase();
+  if (type.includes('wav')) return '.wav';
+  if (type.includes('mpeg') || type.includes('mp3')) return '.mp3';
+  if (type.includes('mp4') || type.includes('m4a')) return '.m4a';
+  if (type.includes('ogg')) return '.ogg';
+  return '.webm';
+}
 
 app.use(cors({
   origin: function (origin, callback) {
@@ -147,6 +201,205 @@ app.use('/api/support', supportRouter);
 app.use('/api/waitlist', waitlistRouter);
 app.use('/api/auth', authLimiter); // Rate limit auth endpoints
 app.use('/api', userRouter);
+
+function validateTtsBody(body) {
+  const { text, voice, lang, emotion, speed } = body || {};
+  if (!text || typeof text !== 'string' || text.trim().length === 0) {
+    return { error: 'text is required and must be a non-empty string', status: 400 };
+  }
+  if (text.length > TTS_MAX_TEXT_LENGTH) {
+    return { error: `text too long (max ${TTS_MAX_TEXT_LENGTH} characters)`, status: 400 };
+  }
+  return {
+    payload: {
+      text,
+      voice: voice || 'af_heart',
+      lang: lang || 'en-us',
+      emotion: emotion || 'neutral',
+      speed: speed === undefined ? 1.0 : speed,
+    },
+  };
+}
+
+async function synthesizeKokoro(payload) {
+  const ttsResponse = await axios({
+    method: 'post',
+    url: `${TTS_ENGINE_URL}/api/v1/tts`,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(TTS_ENGINE_API_KEY ? { 'X-API-Key': TTS_ENGINE_API_KEY } : {}),
+    },
+    data: payload,
+    responseType: 'arraybuffer',
+    timeout: 120000,
+    httpAgent: ttsHttpAgent,
+    httpsAgent: ttsHttpAgent,
+  });
+  return {
+    buffer: Buffer.from(ttsResponse.data),
+    contentType: 'audio/wav',
+    provider: 'kokoro',
+    headers: {
+      'X-Audio-Duration-S': ttsResponse.headers['x-audio-duration-s'],
+      'X-Real-Time-Factor': ttsResponse.headers['x-real-time-factor'],
+      'X-Segments': ttsResponse.headers['x-segments'],
+    },
+  };
+}
+
+app.post('/api/tts', requireAuth, async (req, res) => {
+  const validated = validateTtsBody(req.body);
+  if (validated.error) {
+    return res.status(validated.status).json({ error: validated.error });
+  }
+
+  try {
+    let result;
+    if (useOpenAiTts()) {
+      // Fast path — OpenAI tts-1 (~ChatGPT speech latency for short lines)
+      result = await synthesizeOpenAiSpeech({
+        text: validated.payload.text,
+        voice: validated.payload.voice,
+      });
+    } else {
+      result = await synthesizeKokoro(validated.payload);
+    }
+
+    res.set('Content-Type', result.contentType);
+    res.set('X-TTS-Provider', result.provider);
+    if (result.headers) {
+      for (const [key, value] of Object.entries(result.headers)) {
+        if (value) res.set(key, value);
+      }
+    }
+    return res.status(200).send(result.buffer);
+  } catch (error) {
+    // If OpenAI fails, fall back to Kokoro so voice never hard-dies
+    if (useOpenAiTts()) {
+      try {
+        console.warn('[TTS] OpenAI failed, falling back to Kokoro:', error.message);
+        const result = await synthesizeKokoro(validated.payload);
+        res.set('Content-Type', result.contentType);
+        res.set('X-TTS-Provider', 'kokoro-fallback');
+        if (result.headers) {
+          for (const [key, value] of Object.entries(result.headers)) {
+            if (value) res.set(key, value);
+          }
+        }
+        return res.status(200).send(result.buffer);
+      } catch (fallbackErr) {
+        console.error('[TTS] Kokoro fallback also failed:', fallbackErr.message);
+      }
+    }
+    const status = error.response?.status || 502;
+    const detail = error.response?.data ? error.response.data.toString() : error.message;
+    return res.status(status).json({ error: 'TTS service error', detail });
+  }
+});
+
+// NDJSON PCM stream (Kokoro). OpenAI uses the fast /api/tts full-response path instead.
+app.post('/api/tts/stream', requireAuth, async (req, res) => {
+  const validated = validateTtsBody(req.body);
+  if (validated.error) {
+    return res.status(validated.status).json({ error: validated.error });
+  }
+
+  // OpenAI: return a single fast MP3 as a pseudo-stream isn't worth it — client uses /api/tts
+  if (useOpenAiTts()) {
+    try {
+      const result = await synthesizeOpenAiSpeech({
+        text: validated.payload.text,
+        voice: validated.payload.voice,
+      });
+      res.set('Content-Type', result.contentType);
+      res.set('X-TTS-Provider', result.provider);
+      return res.status(200).send(result.buffer);
+    } catch (error) {
+      console.warn('[TTS stream] OpenAI failed, falling through to Kokoro stream:', error.message);
+    }
+  }
+
+  try {
+    const ttsResponse = await axios({
+      method: 'post',
+      url: `${TTS_ENGINE_URL}/api/v1/tts/stream`,
+      headers: {
+        'Content-Type': 'application/json',
+        ...(TTS_ENGINE_API_KEY ? { 'X-API-Key': TTS_ENGINE_API_KEY } : {}),
+        Accept: 'application/x-ndjson',
+      },
+      data: validated.payload,
+      responseType: 'stream',
+      timeout: 120000,
+      httpAgent: ttsHttpAgent,
+      httpsAgent: ttsHttpAgent,
+    });
+
+    res.set('Content-Type', 'application/x-ndjson');
+    res.set('X-TTS-Provider', 'kokoro');
+    res.set('Cache-Control', 'no-cache');
+    ttsResponse.data.on('error', (err) => {
+      console.error('[TTS stream] upstream error:', err.message);
+      if (!res.headersSent) {
+        res.status(502).json({ error: 'TTS stream error', detail: err.message });
+      } else {
+        res.end();
+      }
+    });
+    req.on('close', () => {
+      ttsResponse.data.destroy();
+    });
+    ttsResponse.data.pipe(res);
+  } catch (error) {
+    const status = error.response?.status || 502;
+    let detail = error.message;
+    try {
+      const data = error.response?.data;
+      if (data && typeof data.pipe === 'function') {
+        const chunks = [];
+        for await (const chunk of data) chunks.push(chunk);
+        detail = Buffer.concat(chunks).toString() || detail;
+      } else if (data != null) {
+        detail = Buffer.isBuffer(data) ? data.toString() : String(data);
+      }
+    } catch (_) {
+      // keep detail = error.message
+    }
+    return res.status(status).json({ error: 'TTS service error', detail });
+  }
+});
+
+// Voice Lounge STT — Groq Whisper (whisper-large-v3-turbo)
+app.post('/api/transcribe', requireAuth, audioUpload.single('audio'), async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: 'audio file is required (field name: audio)' });
+  }
+  if (!process.env.GROQ_API_KEY) {
+    return res.status(503).json({ error: 'GROQ_API_KEY not configured' });
+  }
+
+  const ext = audioExtensionForMime(req.file.mimetype);
+  const namedPath = `${req.file.path}${ext}`;
+  try {
+    fs.renameSync(req.file.path, namedPath);
+  } catch (renameErr) {
+    console.error('[transcribe] rename failed:', renameErr.message);
+    try { fs.unlinkSync(req.file.path); } catch (_) { /* ignore */ }
+    return res.status(500).json({ error: 'Failed to prepare audio for transcription' });
+  }
+
+  try {
+    const text = await transcribeAudio(namedPath);
+    const cleaned = (text || '').trim();
+    if (!cleaned) {
+      return res.status(422).json({ error: 'No speech detected' });
+    }
+    return res.json({ text: cleaned });
+  } catch (err) {
+    console.error('[transcribe] failed:', err.message);
+    return res.status(502).json({ error: 'Transcription failed', detail: err.message });
+  }
+});
 
 if (process.env.SENTRY_DSN) {
   Sentry.setupExpressErrorHandler(app);
@@ -1248,7 +1501,8 @@ if (adData.analysis && adData.analysis.hook) {
 });
 
 app.post('/api/creative-director-chat', requireAuth, requireOwnership, async (req, res) => {
-  let { messages, dna, isRoastMode, userId } = req.body;
+  let { messages, dna, isRoastMode, userId, voiceMode } = req.body;
+  voiceMode = !!voiceMode;
 
   // groq check removed in favor of openrouter
 
@@ -1326,9 +1580,16 @@ app.post('/api/creative-director-chat', requireAuth, requireOwnership, async (re
     
     End exactly with: ${isProductIntel ? '"Before we talk launch strategy — what\'s your budget and timeframe for testing this?"' : '"Before I break this down — what\'s your product and who are you selling to?"'}
     ` : isProductIntel ? 'Bridge the Product Intel to their strategy. Tell them exactly how to position this product or why they should drop it immediately. Give specific marketing angles.' : 'Bridge the DNA to their product. If they sell [Product], tell them exactly how to remix [Hook] for it. Always end with a suggestion for a script or hook variation.'}
+
+    ${voiceMode ? `
+    VOICE MODE (CRITICAL — you are being spoken aloud via TTS):
+    - Reply in 1 or 2 short spoken sentences ONLY.
+    - Hard cap: 40 words. No markdown, bullets, emoji, headers, or lists.
+    - Sound like a sharp media buyer on a phone call. End with one tight question if needed.
+    ` : ''}
     `;
 
-    let responseText;
+    let completion;
     const MAX_RETRIES = 3;
     const sanitizedMessages = (messages || []).map(msg => ({
       role: msg.role,
@@ -1338,8 +1599,8 @@ app.post('/api/creative-director-chat', requireAuth, requireOwnership, async (re
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
       try {
 
-        if (plan === 'studio') {
-          // Studio uses Claude Haiku via OpenRouter
+        if (plan === 'studio' && !voiceMode) {
+          // Studio uses Claude Haiku via OpenRouter (text lounge)
           const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
             method: 'POST',
             headers: {
@@ -1355,14 +1616,28 @@ app.post('/api/creative-director-chat', requireAuth, requireOwnership, async (re
                 ...sanitizedMessages
               ],
               temperature: 0.7,
+              max_tokens: 800,
             })
           });
           
           if (!response.ok) throw new Error(`OpenRouter API error: ${response.status}`);
           const completionData = await response.json();
           completion = { choices: [{ message: { content: completionData.choices[0]?.message?.content } }] };
+        } else if (voiceMode) {
+          // Voice Lounge: ultra-fast Groq instant model + tiny completion
+          if (!groq) throw new Error('GROQ_API_KEY not configured');
+          completion = await groq.chat.completions.create({
+            messages: [
+              { role: "system", content: systemPrompt },
+              ...sanitizedMessages
+            ],
+            model: "llama-3.1-8b-instant",
+            temperature: 0.5,
+            max_tokens: 90,
+          }, { timeout: 15000 });
         } else {
-          // Creator/Free uses Llama 70B via Groq
+          // Creator/Free text lounge uses Llama 70B via Groq
+          if (!groq) throw new Error('GROQ_API_KEY not configured');
           completion = await groq.chat.completions.create({
             messages: [
               { role: "system", content: systemPrompt },
@@ -1671,6 +1946,9 @@ app.use((err, req, res, next) => {
 });
 
 const server = app.listen(port, async () => {
+  // Keep custom Kokoro hot so Voice Lounge doesn't pay cold-start tax every turn
+  warmKokoroEngine();
+  setInterval(warmKokoroEngine, 3 * 60 * 1000).unref?.();
 
 try {
     const isHealthy = await testConnection();
