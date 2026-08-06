@@ -43,8 +43,8 @@ const https = require('https');
 
 const TTS_ENGINE_URL = process.env.TTS_ENGINE_URL || 'http://localhost:8100';
 const TTS_ENGINE_API_KEY = process.env.TTS_ENGINE_API_KEY || '';
-// ~2 minutes of synthesized audio; mirrors the cap in the web client's TTS proxy route
-const TTS_MAX_TEXT_LENGTH = 2000;
+// Matches tts-engine max_text_length; client may send long Voice Lounge replies in chunks
+const TTS_MAX_TEXT_LENGTH = 5000;
 
 // Keep TCP connections warm to Railway Kokoro — kills cold-handshake lag between turns
 const ttsHttpAgent = TTS_ENGINE_URL.startsWith('https')
@@ -1582,10 +1582,11 @@ app.post('/api/creative-director-chat', requireAuth, requireOwnership, async (re
     ` : isProductIntel ? 'Bridge the Product Intel to their strategy. Tell them exactly how to position this product or why they should drop it immediately. Give specific marketing angles.' : 'Bridge the DNA to their product. If they sell [Product], tell them exactly how to remix [Hook] for it. Always end with a suggestion for a script or hook variation.'}
 
     ${voiceMode ? `
-    VOICE MODE (CRITICAL — you are being spoken aloud via TTS):
-    - Reply in 1 or 2 short spoken sentences ONLY.
-    - Hard cap: 40 words. No markdown, bullets, emoji, headers, or lists.
-    - Sound like a sharp media buyer on a phone call. End with one tight question if needed.
+    VOICE MODE (you are being spoken aloud via TTS — give a COMPLETE answer):
+    - Answer the user's question fully in natural spoken English (like a sharp media buyer on a call).
+    - Aim for 4–8 clear sentences (~80–160 words). Do NOT cut the answer short.
+    - No markdown, bullets, emoji, headers, or lists — plain speech only.
+    - Cover the point, then end with one useful follow-up question when it helps.
     ` : ''}
     `;
 
@@ -1624,7 +1625,7 @@ app.post('/api/creative-director-chat', requireAuth, requireOwnership, async (re
           const completionData = await response.json();
           completion = { choices: [{ message: { content: completionData.choices[0]?.message?.content } }] };
         } else if (voiceMode) {
-          // Voice Lounge: ultra-fast Groq instant model + tiny completion
+          // Voice Lounge: fast Groq instant model; full spoken answers (TTS streams)
           if (!groq) throw new Error('GROQ_API_KEY not configured');
           completion = await groq.chat.completions.create({
             messages: [
@@ -1632,9 +1633,9 @@ app.post('/api/creative-director-chat', requireAuth, requireOwnership, async (re
               ...sanitizedMessages
             ],
             model: "llama-3.1-8b-instant",
-            temperature: 0.5,
-            max_tokens: 90,
-          }, { timeout: 15000 });
+            temperature: 0.55,
+            max_tokens: 420,
+          }, { timeout: 20000 });
         } else {
           // Creator/Free text lounge uses Llama 70B via Groq
           if (!groq) throw new Error('GROQ_API_KEY not configured');
