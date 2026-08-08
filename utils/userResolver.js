@@ -49,8 +49,8 @@ async function resolveInternalId(id, clerkInfo = null) {
     }
 
     const [newUser] = await sql`
-      INSERT INTO users (clerk_id, email, name, subscription_tier, created_at)
-      VALUES (${id}, ${email}, ${name}, 'free', ${new Date()})
+      INSERT INTO users (clerk_id, email, name, subscription_tier, credits_remaining, created_at)
+      VALUES (${id}, ${email}, ${name}, 'free', 0, ${new Date()})
       RETURNING id
     `;
 

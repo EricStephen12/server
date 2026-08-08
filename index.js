@@ -621,20 +621,27 @@ async function checkLimits(inputUserId, type) {
     const userId = await resolveInternalId(inputUserId);
     if (!userId) return { allowed: true };
 
-    const [user] = await sql`SELECT subscription_tier, credits_remaining FROM users WHERE id = ${userId}`;
-    const tier = user?.subscription_tier || 'free';
+    // created_at is required so the monthly cycle matches /api/me (account day-of-month)
+    const [user] = await sql`
+      SELECT subscription_tier, credits_remaining, created_at
+      FROM users WHERE id = ${userId}
+    `;
+    let tier = user?.subscription_tier || 'free';
+    if (tier === 'agency') tier = 'studio';
+    if (tier === 'founding') tier = 'creator';
 
     const limits = {
       free: 3,
       creator: 30,
-      studio: 100,   // was 250 — reduced to match new $29 pricing
-      agency: 100    // Legacy — treated same as studio
+      studio: 100,
+      agency: 100,
+      founding: 30,
     };
 
-    const userLimit = limits[tier] ?? 0;
+    const userLimit = limits[tier] ?? 3;
 
-    // Billing cycle start — same day of month as account creation (matches Polar/Stripe behavior)
-    const cycleAnchor = new Date(user.created_at || new Date());
+    // Billing cycle start — same day of month as account creation (matches /api/me)
+    const cycleAnchor = new Date(user?.created_at || new Date());
     const now = new Date();
     const cycleStart = new Date(now.getFullYear(), now.getMonth(), cycleAnchor.getDate());
     if (cycleStart > now) {
@@ -642,11 +649,19 @@ async function checkLimits(inputUserId, type) {
     }
 
     if (type === 'scan') {
-      // Admin-granted bonus scans bypass the monthly cap — deduct one and allow
+      // Admin-granted bonus scans bypass the monthly cap — deduct one and allow.
+      // Do not insert a scan_event when usedBonus (callers must respect this flag).
       const bonusCredits = user?.credits_remaining || 0;
       if (bonusCredits > 0) {
-        await sql`UPDATE users SET credits_remaining = credits_remaining - 1 WHERE id = ${userId}`;
-        return { allowed: true, count: 0, limit: userLimit, usedBonus: true };
+        const [updated] = await sql`
+          UPDATE users
+          SET credits_remaining = credits_remaining - 1
+          WHERE id = ${userId} AND credits_remaining > 0
+          RETURNING credits_remaining
+        `;
+        if (updated) {
+          return { allowed: true, count: 0, limit: userLimit, usedBonus: true };
+        }
       }
 
       const [{ count }] = await sql`
@@ -671,7 +686,7 @@ async function checkLimits(inputUserId, type) {
         } catch (_) {}
       }
 
-      return { allowed: count < userLimit, count, limit: userLimit };
+      return { allowed: count < userLimit, count, limit: userLimit, usedBonus: false };
     }
 
     if (type === 'script') {
@@ -684,6 +699,7 @@ async function checkLimits(inputUserId, type) {
 
     return { allowed: true };
   } catch (err) {
+    console.error('[checkLimits] Error:', err.message);
     return { allowed: true }; // Allow on error to avoid blocking users
   }
 }
@@ -856,6 +872,7 @@ app.post('/api/analyze', requireAuth, requireOwnership, scanLimiter, express.jso
   if (!userId) return res.status(404).json({ error: 'User resolution failed' });
 
   let plan = 'free';
+  let usedBonus = false;
   if (userId) {
     const limit = await checkLimits(userId, 'scan');
     if (!limit.allowed) {
@@ -865,6 +882,7 @@ app.post('/api/analyze', requireAuth, requireOwnership, scanLimiter, express.jso
         upgradeRequired: true
       });
     }
+    usedBonus = !!limit.usedBonus;
 
     try {
       const [user] = await sql`SELECT subscription_tier FROM users WHERE id = ${userId}`;
@@ -875,10 +893,10 @@ app.post('/api/analyze', requireAuth, requireOwnership, scanLimiter, express.jso
   // Tier-based length validation
   let maxLength = 90; // free
   let maxFrames = 5;
-  if (plan === 'creator') {
+  if (plan === 'creator' || plan === 'founding') {
       maxLength = 300; // 5 mins
       maxFrames = 15;
-  } else if (plan === 'studio') {
+  } else if (plan === 'studio' || plan === 'agency') {
       maxLength = 1800; // 30 mins
       maxFrames = 25;
   }
@@ -906,12 +924,13 @@ app.post('/api/analyze', requireAuth, requireOwnership, scanLimiter, express.jso
       maxLength
     };
 
-    // Insert a scan_event immediately to prevent race condition where user
-    // clicks analyze multiple times before any job completes
-    try {
-      await sql`INSERT INTO scan_events (user_id, created_at) VALUES (${userId}, NOW())`;
-    } catch (scanEventErr) {
-      console.error('[Analyze] Failed to insert scan_event:', scanEventErr.message);
+    // Count against monthly quota only when not consuming an admin bonus credit
+    if (!usedBonus) {
+      try {
+        await sql`INSERT INTO scan_events (user_id, created_at) VALUES (${userId}, NOW())`;
+      } catch (scanEventErr) {
+        console.error('[Analyze] Failed to insert scan_event:', scanEventErr.message);
+      }
     }
 
     try {
@@ -938,6 +957,7 @@ app.post('/api/product-intel', requireAuth, requireOwnership, scanLimiter, expre
   if (!userId) return res.status(404).json({ error: 'User resolution failed' });
 
   let plan = 'free';
+  let usedBonus = false;
   if (userId) {
     const limit = await checkLimits(userId, 'scan');
     if (!limit.allowed) {
@@ -947,6 +967,7 @@ app.post('/api/product-intel', requireAuth, requireOwnership, scanLimiter, expre
         upgradeRequired: true
       });
     }
+    usedBonus = !!limit.usedBonus;
 
     try {
       const [user] = await sql`SELECT subscription_tier FROM users WHERE id = ${userId}`;
@@ -957,10 +978,10 @@ app.post('/api/product-intel', requireAuth, requireOwnership, scanLimiter, expre
   // Tier-based length validation
   let maxLength = 90; // free
   let maxFrames = 5;
-  if (plan === 'creator') {
+  if (plan === 'creator' || plan === 'founding') {
       maxLength = 300; // 5 mins
       maxFrames = 15;
-  } else if (plan === 'studio') {
+  } else if (plan === 'studio' || plan === 'agency') {
       maxLength = 1800; // 30 mins
       maxFrames = 25;
   }
@@ -989,11 +1010,12 @@ app.post('/api/product-intel', requireAuth, requireOwnership, scanLimiter, expre
       plan
     };
 
-    // Insert scan_event immediately to prevent race condition
-    try {
-      await sql`INSERT INTO scan_events (user_id, created_at) VALUES (${userId}, NOW())`;
-    } catch (scanEventErr) {
-      console.error('[Product Intel] Failed to insert scan_event:', scanEventErr.message);
+    if (!usedBonus) {
+      try {
+        await sql`INSERT INTO scan_events (user_id, created_at) VALUES (${userId}, NOW())`;
+      } catch (scanEventErr) {
+        console.error('[Product Intel] Failed to insert scan_event:', scanEventErr.message);
+      }
     }
 
     try {
@@ -1038,6 +1060,7 @@ app.post('/api/upload', requireAuth, scanLimiter, upload.single('file'), async (
       upgradeRequired: true
     });
   }
+  const usedBonus = !!limit.usedBonus;
 
   try {
     const [user] = await sql`SELECT subscription_tier FROM users WHERE id = ${userId}`;
@@ -1045,7 +1068,11 @@ app.post('/api/upload', requireAuth, scanLimiter, upload.single('file'), async (
   } catch (err) {}
 
   // Tier-based file size limits: free=50MB, creator=200MB, studio=500MB
-  const maxSizeBytes = plan === 'studio' ? 500 * 1024 * 1024 : plan === 'creator' ? 200 * 1024 * 1024 : 50 * 1024 * 1024;
+  const maxSizeBytes = (plan === 'studio' || plan === 'agency')
+    ? 500 * 1024 * 1024
+    : (plan === 'creator' || plan === 'founding')
+      ? 200 * 1024 * 1024
+      : 50 * 1024 * 1024;
   if (req.file.size > maxSizeBytes) {
     const fs = require('fs');
     try { fs.unlinkSync(req.file.path); } catch (_) {}
@@ -1054,8 +1081,8 @@ app.post('/api/upload', requireAuth, scanLimiter, upload.single('file'), async (
 
   let maxLength = 90;
   let maxFrames = 5;
-  if (plan === 'creator') { maxLength = 300; maxFrames = 15; }
-  else if (plan === 'studio') { maxLength = 1800; maxFrames = 25; }
+  if (plan === 'creator' || plan === 'founding') { maxLength = 300; maxFrames = 15; }
+  else if (plan === 'studio' || plan === 'agency') { maxLength = 1800; maxFrames = 25; }
 
   try {
     const originalFileName = req.file.originalname || 'Uploaded Video';
@@ -1077,6 +1104,15 @@ app.post('/api/upload', requireAuth, scanLimiter, upload.single('file'), async (
       maxFrames,
       maxLength
     };
+
+    // Uploads must count toward monthly quota the same as URL scans
+    if (!usedBonus) {
+      try {
+        await sql`INSERT INTO scan_events (user_id, created_at) VALUES (${userId}, NOW())`;
+      } catch (scanEventErr) {
+        console.error('[Upload] Failed to insert scan_event:', scanEventErr.message);
+      }
+    }
 
     try {
       await analyzeQueue.add('analyze-video', jobData);
@@ -1582,11 +1618,11 @@ app.post('/api/creative-director-chat', requireAuth, requireOwnership, async (re
     ` : isProductIntel ? 'Bridge the Product Intel to their strategy. Tell them exactly how to position this product or why they should drop it immediately. Give specific marketing angles.' : 'Bridge the DNA to their product. If they sell [Product], tell them exactly how to remix [Hook] for it. Always end with a suggestion for a script or hook variation.'}
 
     ${voiceMode ? `
-    VOICE MODE (you are being spoken aloud via TTS — give a COMPLETE answer):
-    - Answer the user's question fully in natural spoken English (like a sharp media buyer on a call).
-    - Aim for 4–8 clear sentences (~80–160 words). Do NOT cut the answer short.
+    VOICE MODE (you are being spoken aloud via TTS — one continuous spoken turn):
+    - Answer fully in natural spoken English, like a sharp media buyer on a live call.
+    - Aim for about 120–220 words in one continuous thought. Do not trail off mid-point.
     - No markdown, bullets, emoji, headers, or lists — plain speech only.
-    - Cover the point, then end with one useful follow-up question when it helps.
+    - End with at most one short follow-up question when it helps; otherwise stop cleanly.
     ` : ''}
     `;
 
@@ -1625,7 +1661,7 @@ app.post('/api/creative-director-chat', requireAuth, requireOwnership, async (re
           const completionData = await response.json();
           completion = { choices: [{ message: { content: completionData.choices[0]?.message?.content } }] };
         } else if (voiceMode) {
-          // Voice Lounge: fast Groq instant model; full spoken answers (TTS streams)
+          // Voice Lounge: fast Groq instant model; fuller spoken turns (~800 tokens)
           if (!groq) throw new Error('GROQ_API_KEY not configured');
           completion = await groq.chat.completions.create({
             messages: [
@@ -1634,7 +1670,7 @@ app.post('/api/creative-director-chat', requireAuth, requireOwnership, async (re
             ],
             model: "llama-3.1-8b-instant",
             temperature: 0.55,
-            max_tokens: 420,
+            max_tokens: 800,
           }, { timeout: 20000 });
         } else {
           // Creator/Free text lounge uses Llama 70B via Groq
