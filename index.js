@@ -1626,9 +1626,10 @@ app.post('/api/creative-director-chat', requireAuth, requireOwnership, async (re
     ` : isProductIntel ? 'Bridge the Product Intel to their strategy. Tell them exactly how to position this product or why they should drop it immediately. Give specific marketing angles.' : 'Bridge the DNA to their product. If they sell [Product], tell them exactly how to remix [Hook] for it. Always end with a suggestion for a script or hook variation.'}
 
     ${voiceMode ? `
-    VOICE MODE (you are being spoken aloud via TTS — one continuous spoken turn):
-    - Answer fully in natural spoken English, like a sharp media buyer on a live call.
-    - Aim for about 120–220 words in one continuous thought. Do not trail off mid-point.
+    VOICE MODE (you are being spoken aloud via TTS — keep turns short so speech stays continuous):
+    - Natural spoken English, like a sharp media buyer on a live call.
+    - Hard cap: 2–4 short sentences, about 40–90 words total. Never ramble.
+    - One clear point per turn. Do not trail off mid-point.
     - No markdown, bullets, emoji, headers, or lists — plain speech only.
     - End with at most one short follow-up question when it helps; otherwise stop cleanly.
     ` : ''}
@@ -1669,7 +1670,7 @@ app.post('/api/creative-director-chat', requireAuth, requireOwnership, async (re
           const completionData = await response.json();
           completion = { choices: [{ message: { content: completionData.choices[0]?.message?.content } }] };
         } else if (voiceMode) {
-          // Voice Lounge: fast Groq instant model; fuller spoken turns (~800 tokens)
+          // Voice Lounge: short spoken turns — long TTS replies stall mid-speech on Kokoro
           if (!groq) throw new Error('GROQ_API_KEY not configured');
           completion = await groq.chat.completions.create({
             messages: [
@@ -1678,7 +1679,7 @@ app.post('/api/creative-director-chat', requireAuth, requireOwnership, async (re
             ],
             model: "llama-3.1-8b-instant",
             temperature: 0.55,
-            max_tokens: 800,
+            max_tokens: 220,
           }, { timeout: 20000 });
         } else {
           // Creator/Free text lounge uses Llama 70B via Groq
