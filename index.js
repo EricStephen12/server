@@ -1545,8 +1545,9 @@ if (adData.analysis && adData.analysis.hook) {
 });
 
 app.post('/api/creative-director-chat', requireAuth, requireOwnership, async (req, res) => {
-  let { messages, dna, isRoastMode, userId, voiceMode } = req.body;
+  let { messages, dna, isRoastMode, userId, voiceMode, stream } = req.body;
   voiceMode = !!voiceMode;
+  const wantStream = !!stream && voiceMode;
 
   // groq check removed in favor of openrouter
 
@@ -1672,6 +1673,33 @@ app.post('/api/creative-director-chat', requireAuth, requireOwnership, async (re
         } else if (voiceMode) {
           // Voice Lounge: short spoken turns — long TTS replies stall mid-speech on Kokoro
           if (!groq) throw new Error('GROQ_API_KEY not configured');
+          if (wantStream) {
+            // SSE token stream so the client can TTS sentence-by-sentence
+            const groqStream = await groq.chat.completions.create({
+              messages: [
+                { role: 'system', content: systemPrompt },
+                ...sanitizedMessages,
+              ],
+              model: 'llama-3.1-8b-instant',
+              temperature: 0.55,
+              max_tokens: 220,
+              stream: true,
+            }, { timeout: 20000 });
+
+            res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+            res.setHeader('Cache-Control', 'no-cache, no-transform');
+            res.setHeader('Connection', 'keep-alive');
+            if (typeof res.flushHeaders === 'function') res.flushHeaders();
+
+            for await (const chunk of groqStream) {
+              const delta = chunk.choices?.[0]?.delta?.content || '';
+              if (delta) {
+                res.write(`data: ${JSON.stringify({ type: 'delta', text: delta })}\n\n`);
+              }
+            }
+            res.write(`data: ${JSON.stringify({ type: 'done' })}\n\n`);
+            return res.end();
+          }
           completion = await groq.chat.completions.create({
             messages: [
               { role: "system", content: systemPrompt },
@@ -1709,7 +1737,14 @@ app.post('/api/creative-director-chat', requireAuth, requireOwnership, async (re
     res.json({ message: completion.choices[0]?.message?.content });
   } catch (error) {
     console.error('Creative Director Chat Error:', error.message);
-    res.status(500).json({ error: 'Creative Director is temporarily unavailable. Please try again.', details: error.message });
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Creative Director is temporarily unavailable. Please try again.', details: error.message });
+    } else {
+      try {
+        res.write(`data: ${JSON.stringify({ type: 'error', message: error.message })}\n\n`);
+        res.end();
+      } catch (_) { /* already closed */ }
+    }
   }
 });
 
