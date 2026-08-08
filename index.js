@@ -1593,7 +1593,19 @@ app.post('/api/creative-director-chat', requireAuth, requireOwnership, async (re
     - **Hook**: ${dna.metrics?.hook_power || 'N/A'}/10 (Visual: ${dna.hook_verdict?.visual_hook_grade || 'N/A'}, Audio: ${dna.hook_verdict?.spoken_hook_grade || 'N/A'})
     - **Retention**: ${dna.metrics?.retention_score || 'N/A'}/10
     - **CTA**: ${dna.metrics?.conversion_trigger || 'N/A'}/10
+    ${Array.isArray(dna.visual_triggers) && dna.visual_triggers.length
+      ? `- **Director Frame Anchors**: ${dna.visual_triggers.map((t) => `${t.label || t.reason_key} @ ${t.timestamp_seconds}s`).join('; ')}`
+      : ''}
     `;
+
+    let collectiveBlock = '';
+    try {
+      const { retrieveRelevantPatterns, formatCollectivePromptBlock } = require('./utils/collectiveMemory');
+      const patterns = await retrieveRelevantPatterns(dna || {}, { limit: voiceMode ? 3 : 5 });
+      collectiveBlock = formatCollectivePromptBlock(patterns);
+    } catch (memErr) {
+      console.warn('[CollectiveMemory] chat retrieve skipped:', memErr.message);
+    }
 
     const systemPrompt = `You are an Elite Creative Director & Media Buyer. 
     You don't talk like a robot. You talk like the smartest friend I have who spends $50k/day on TikTok ads. 
@@ -1609,6 +1621,8 @@ app.post('/api/creative-director-chat', requireAuth, requireOwnership, async (re
     ${isRoastMode ? 'YOUR PERSONA: ROAST MODE. Be ruthless. If the ad sucks, say it. If the hook is weak, tell me I\'m wasting money.' : 'YOUR PERSONA: Creative Director. Direct, high-stakes, elite.'}
 
     ${dnaContext}
+
+    ${collectiveBlock}
 
     THE RULES:
     1. **ACTION OVER ANALYSIS**: Don't just analyze. Tell me what to film or what to sell. 
@@ -1633,6 +1647,7 @@ app.post('/api/creative-director-chat', requireAuth, requireOwnership, async (re
     - One clear point per turn. Do not trail off mid-point.
     - No markdown, bullets, emoji, headers, or lists — plain speech only.
     - End with at most one short follow-up question when it helps; otherwise stop cleanly.
+    ${Array.isArray(dna?.visual_triggers) && dna.visual_triggers.length ? `- When you call out a visual beat, name an approximate second from the Director Frame Anchors so the UI can sync the frame.` : ''}
     ` : ''}
     `;
 
@@ -2091,6 +2106,30 @@ await sql`
             created_at timestamp with time zone DEFAULT now()
           )
         `;
+
+        // Collective Intelligence — anonymized global patterns (no user PII)
+        await sql`
+          CREATE TABLE IF NOT EXISTS collective_patterns (
+            id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+            mode text NOT NULL,
+            niche_key text NOT NULL,
+            hook_band text NOT NULL,
+            retention_band text NOT NULL,
+            conversion_band text NOT NULL,
+            primary_trigger text,
+            style_tags text[] NOT NULL DEFAULT '{}',
+            awareness_level text,
+            market_stage text,
+            pattern_summary text NOT NULL,
+            content_fingerprint text NOT NULL UNIQUE,
+            sighting_count integer NOT NULL DEFAULT 1,
+            last_seen_at timestamptz NOT NULL DEFAULT now(),
+            created_at timestamptz NOT NULL DEFAULT now()
+          )
+        `;
+        await sql`CREATE INDEX IF NOT EXISTS idx_collective_patterns_niche_mode ON collective_patterns (niche_key, mode)`;
+        await sql`CREATE INDEX IF NOT EXISTS idx_collective_patterns_trigger ON collective_patterns (primary_trigger)`;
+        await sql`CREATE INDEX IF NOT EXISTS idx_collective_patterns_last_seen ON collective_patterns (last_seen_at DESC)`;
 
         const [paymentCount] = await sql`SELECT count(*) FROM payments`;
         if (parseInt(paymentCount.count || 0) === 0) {

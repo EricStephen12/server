@@ -125,12 +125,35 @@ async function processAnalysisJob(data) {
     analysis.status = 'completed';
     analysis.mode = mode || 'ad';
 
+    // Ephemeral Director Frames — timestamp metadata only (no image blobs)
+    try {
+      const { attachVisualTriggers } = require('./visualTriggers');
+      const frameMeta = (frames || []).map((f) => ({
+        timestamp: f.timestamp,
+        phase: f.phase,
+      }));
+      attachVisualTriggers(analysis, frameMeta);
+    } catch (trigErr) {
+      console.warn('[VisualTriggers] attach failed (non-fatal):', trigErr.message);
+    }
+
     await sql`
         UPDATE lounge_sessions
         SET dna = ${JSON.stringify(analysis)}, updated_at = NOW()
         WHERE id = ${sessionId}
     `;
     console.log(`[Worker] Successfully finished job for session ${sessionId}`);
+
+    // Collective Intelligence — anonymized pattern upsert (never fails the user job)
+    try {
+      const { upsertPattern } = require('./collectiveMemory');
+      const result = await upsertPattern(analysis);
+      if (result.ok) {
+        console.log(`[CollectiveMemory] upserted pattern ${result.id} (sightings=${result.sightings})`);
+      }
+    } catch (memErr) {
+      console.warn('[CollectiveMemory] post-analyze hook failed (non-fatal):', memErr.message);
+    }
 
   } catch(analyzeErr) {
     console.error(`[Worker] Mobile Analysis Error for session ${sessionId}:`, analyzeErr);

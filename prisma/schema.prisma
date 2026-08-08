@@ -203,3 +203,28 @@ model SystemSettings {
 
   @@map("system_settings")
 }
+
+/// Anonymized cross-user market patterns for Collective Intelligence.
+/// NEVER store user_id, video_url, transcript, product names, or chat here.
+model CollectivePattern {
+  id                 String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  mode               String
+  nicheKey           String    @map("niche_key")
+  hookBand           String    @map("hook_band")
+  retentionBand      String    @map("retention_band")
+  conversionBand     String    @map("conversion_band")
+  primaryTrigger     String?   @map("primary_trigger")
+  styleTags          String[]  @default([]) @map("style_tags")
+  awarenessLevel     String?   @map("awareness_level")
+  marketStage        String?   @map("market_stage")
+  patternSummary     String    @map("pattern_summary") @db.Text
+  contentFingerprint String    @unique @map("content_fingerprint")
+  sightingCount      Int       @default(1) @map("sighting_count")
+  lastSeenAt         DateTime  @default(now()) @map("last_seen_at") @db.Timestamptz(6)
+  createdAt          DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([nicheKey, mode], map: "idx_collective_patterns_niche_mode")
+  @@index([primaryTrigger], map: "idx_collective_patterns_trigger")
+  @@index([lastSeenAt], map: "idx_collective_patterns_last_seen")
+  @@map("collective_patterns")
+}
