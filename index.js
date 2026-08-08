@@ -51,17 +51,25 @@ const ttsHttpAgent = TTS_ENGINE_URL.startsWith('https')
   ? new https.Agent({ keepAlive: true, maxSockets: 8, keepAliveMsecs: 60_000 })
   : new http.Agent({ keepAlive: true, maxSockets: 8, keepAliveMsecs: 60_000 });
 
+/** Keep Railway TTS from cold-sleeping. Health can be slow on CPU instances — don't treat timeouts as fatal. */
 function warmKokoroEngine() {
   const url = `${TTS_ENGINE_URL.replace(/\/$/, '')}/health`;
   axios
-    .get(url, { timeout: 12_000, httpAgent: ttsHttpAgent, httpsAgent: ttsHttpAgent })
+    .get(url, { timeout: 45_000, httpAgent: ttsHttpAgent, httpsAgent: ttsHttpAgent })
     .then((r) => {
       if (r.data?.model_loaded) {
         console.log('[TTS] Kokoro warm OK');
+      } else {
+        console.warn('[TTS] Kokoro warm: health returned but model not loaded yet');
       }
     })
     .catch((err) => {
-      console.warn('[TTS] Kokoro warm ping failed:', err.message);
+      // Keepalive only — real speak requests still use their own timeout / WAV fallback
+      if (err.code === 'ECONNABORTED' || /timeout/i.test(err.message || '')) {
+        console.warn('[TTS] Kokoro warm ping slow/timeout (engine may be cold) — voice still available on demand');
+      } else {
+        console.warn('[TTS] Kokoro warm ping failed:', err.message);
+      }
     });
 }
 
