@@ -672,8 +672,33 @@ async function checkLimits(inputUserId, type) {
     }
 
     if (type === 'scan') {
-      // Admin-granted bonus scans bypass the monthly cap — deduct one and allow.
-      // Do not insert a scan_event when usedBonus (callers must respect this flag).
+      const [{ count }] = await sql`
+        SELECT count(*)::int FROM scan_events 
+        WHERE user_id = ${userId} AND created_at >= ${cycleStart}
+      `;
+
+      // Monthly quota first; admin bonus credits only after the plan cap is reached.
+      if (count < userLimit) {
+        // Fire upgrade nudge email at 80% usage (once per cycle) — non-blocking
+        const pct = userLimit > 0 ? count / userLimit : 0;
+        if (pct >= 0.8 && pct < 1 && tier !== 'studio') {
+          try {
+            const [userData] = await sql`SELECT email, name FROM users WHERE id = ${userId}`;
+            if (userData?.email) {
+              sendUpgradeNudgeEmail({
+                name: userData.name,
+                email: userData.email,
+                scansUsed: count,
+                scanLimit: userLimit,
+                plan: tier
+              }).catch(() => {});
+            }
+          } catch (_) {}
+        }
+
+        return { allowed: true, count, limit: userLimit, usedBonus: false };
+      }
+
       const bonusCredits = user?.credits_remaining || 0;
       if (bonusCredits > 0) {
         const [updated] = await sql`
@@ -683,33 +708,11 @@ async function checkLimits(inputUserId, type) {
           RETURNING credits_remaining
         `;
         if (updated) {
-          return { allowed: true, count: 0, limit: userLimit, usedBonus: true };
+          return { allowed: true, count, limit: userLimit, usedBonus: true };
         }
       }
 
-      const [{ count }] = await sql`
-        SELECT count(*)::int FROM scan_events 
-        WHERE user_id = ${userId} AND created_at >= ${cycleStart}
-      `;
-
-      // Fire upgrade nudge email at 80% usage (once per cycle) — non-blocking
-      const pct = userLimit > 0 ? count / userLimit : 0;
-      if (pct >= 0.8 && pct < 1 && tier !== 'studio') {
-        try {
-          const [userData] = await sql`SELECT email, name FROM users WHERE id = ${userId}`;
-          if (userData?.email) {
-            sendUpgradeNudgeEmail({
-              name: userData.name,
-              email: userData.email,
-              scansUsed: count,
-              scanLimit: userLimit,
-              plan: tier
-            }).catch(() => {});
-          }
-        } catch (_) {}
-      }
-
-      return { allowed: count < userLimit, count, limit: userLimit, usedBonus: false };
+      return { allowed: false, count, limit: userLimit, usedBonus: false };
     }
 
     if (type === 'script') {
@@ -947,13 +950,11 @@ app.post('/api/analyze', requireAuth, requireOwnership, scanLimiter, express.jso
       maxLength
     };
 
-    // Count against monthly quota only when not consuming an admin bonus credit
-    if (!usedBonus) {
-      try {
-        await sql`INSERT INTO scan_events (user_id, created_at) VALUES (${userId}, NOW())`;
-      } catch (scanEventErr) {
-        console.error('[Analyze] Failed to insert scan_event:', scanEventErr.message);
-      }
+    // Every started scan counts toward monthly usage (including bonus-overflow scans).
+    try {
+      await sql`INSERT INTO scan_events (user_id, created_at) VALUES (${userId}, NOW())`;
+    } catch (scanEventErr) {
+      console.error('[Analyze] Failed to insert scan_event:', scanEventErr.message);
     }
 
     try {
@@ -1033,12 +1034,10 @@ app.post('/api/product-intel', requireAuth, requireOwnership, scanLimiter, expre
       plan
     };
 
-    if (!usedBonus) {
-      try {
-        await sql`INSERT INTO scan_events (user_id, created_at) VALUES (${userId}, NOW())`;
-      } catch (scanEventErr) {
-        console.error('[Product Intel] Failed to insert scan_event:', scanEventErr.message);
-      }
+    try {
+      await sql`INSERT INTO scan_events (user_id, created_at) VALUES (${userId}, NOW())`;
+    } catch (scanEventErr) {
+      console.error('[Product Intel] Failed to insert scan_event:', scanEventErr.message);
     }
 
     try {
@@ -1128,13 +1127,10 @@ app.post('/api/upload', requireAuth, scanLimiter, upload.single('file'), async (
       maxLength
     };
 
-    // Uploads must count toward monthly quota the same as URL scans
-    if (!usedBonus) {
-      try {
-        await sql`INSERT INTO scan_events (user_id, created_at) VALUES (${userId}, NOW())`;
-      } catch (scanEventErr) {
-        console.error('[Upload] Failed to insert scan_event:', scanEventErr.message);
-      }
+    try {
+      await sql`INSERT INTO scan_events (user_id, created_at) VALUES (${userId}, NOW())`;
+    } catch (scanEventErr) {
+      console.error('[Upload] Failed to insert scan_event:', scanEventErr.message);
     }
 
     try {
@@ -2074,7 +2070,16 @@ try {
         await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS primary_goal TEXT`;
         await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS source TEXT`;
 
-await sql`
+        await sql`
+          CREATE TABLE IF NOT EXISTS scan_events (
+            id SERIAL PRIMARY KEY,
+            user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+          )
+        `;
+        await sql`CREATE INDEX IF NOT EXISTS idx_scan_events_user_created ON scan_events (user_id, created_at)`;
+
+        await sql`
           CREATE TABLE IF NOT EXISTS support_tickets (
             id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
             user_id uuid REFERENCES users(id) ON DELETE SET NULL,
