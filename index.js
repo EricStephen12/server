@@ -1555,10 +1555,16 @@ if (adData.analysis && adData.analysis.hook) {
   }
 });
 
-app.post('/api/creative-director-chat', requireAuth, requireOwnership, async (req, res) => {
+app.post('/api/creative-director-chat', requireAuth, requireOwnership, express.json({ limit: '2mb' }), async (req, res) => {
   let { messages, dna, isRoastMode, userId, voiceMode, stream } = req.body;
   voiceMode = !!voiceMode;
   const wantStream = !!stream && voiceMode;
+
+  // Frame JPEG previews live in session DNA for UI only — never send to the LLM.
+  if (dna && typeof dna === 'object' && Array.isArray(dna.frames)) {
+    const { frames: _frames, ...dnaRest } = dna;
+    dna = dnaRest;
+  }
 
   // groq check removed in favor of openrouter
 
