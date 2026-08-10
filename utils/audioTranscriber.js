@@ -2,13 +2,16 @@ const Groq = require('groq-sdk');
 const fs = require('fs');
 
 
-async function transcribeAudio(audioPath) {
+async function transcribeAudio(audioPath, options = {}) {
     if (!process.env.GROQ_API_KEY) {
         throw new Error('Groq API Key is missing for Audio Transcription');
     }
 
-    const groq = new Groq({ apiKey: process.env.GROQ_API_KEY, timeout: 15000 });
+    const groq = new Groq({ apiKey: process.env.GROQ_API_KEY, timeout: 30000 });
     const MAX_RETRIES = 3;
+    const language = options.language || 'en';
+    const prompt = options.prompt
+      || 'TikTok ads, hooks, retention, creative director, video marketing, scripts.';
 
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
         try {
@@ -18,6 +21,8 @@ async function transcribeAudio(audioPath) {
                 model: "whisper-large-v3-turbo",
                 response_format: "json",
                 temperature: 0.0,
+                language,
+                prompt,
             });
 
 

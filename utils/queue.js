@@ -127,11 +127,14 @@ async function processAnalysisJob(data) {
     // Ephemeral Director Frames — timestamp metadata only (no image blobs)
     try {
       const { attachVisualTriggers } = require('./visualTriggers');
-      const frameMeta = (frames || []).map((f) => ({
+      attachVisualTriggers(analysis, frames || []);
+      // Session-only frame previews for Voice Lounge (already extracted at analyze time)
+      analysis.frames = (frames || []).map((f) => ({
         timestamp: f.timestamp,
         phase: f.phase,
+        mimeType: f.mimeType || 'image/jpeg',
+        base64: f.base64,
       }));
-      attachVisualTriggers(analysis, frameMeta);
     } catch (trigErr) {
       console.warn('[VisualTriggers] attach failed (non-fatal):', trigErr.message);
     }

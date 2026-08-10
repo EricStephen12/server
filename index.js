@@ -397,7 +397,15 @@ app.post('/api/transcribe', requireAuth, audioUpload.single('audio'), async (req
   }
 
   try {
-    const text = await transcribeAudio(namedPath);
+    const { normalizeAudioForWhisper } = require('./utils/normalizeAudio');
+    let whisperPath = namedPath;
+    try {
+      whisperPath = await normalizeAudioForWhisper(namedPath);
+    } catch (normErr) {
+      console.warn('[transcribe] audio normalize skipped:', normErr.message);
+    }
+
+    const text = await transcribeAudio(whisperPath);
     const cleaned = (text || '').trim();
     if (!cleaned) {
       return res.status(422).json({ error: 'No speech detected' });
