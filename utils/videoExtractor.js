@@ -8,60 +8,96 @@ const ffprobeStatic = require('@ffprobe-installer/ffprobe');
 if (ffmpegStatic) ffmpeg.setFfmpegPath(ffmpegStatic);
 if (ffprobeStatic.path) ffmpeg.setFfprobePath(ffprobeStatic.path);
 const crypto = require('crypto');
-
-// yt-dlp path — bundled exe on Windows, system binary on Linux (Railway)
-const YTDLP_PATH = process.platform === 'win32'
-  ? path.join(__dirname, '../yt-dlp.exe')
-  : 'yt-dlp'; // must be installed on the Railway server: apt-get install yt-dlp
+const { resolveYtdlpPath } = require('./ytdlpPath');
 
 /**
  * Resolve a social video URL to a direct MP4 stream URL.
- * Tries tikwm first (fast, free), falls back to yt-dlp if tikwm fails.
+ * TikTok: tikwm → tiklydown → yt-dlp. Other platforms: yt-dlp.
  */
-async function resolveVideoUrl(url, videoPath) {
-  const isTikTok   = url.includes('tiktok.com');
-  const isReels    = url.includes('instagram.com');
-  const isShorts   = url.includes('youtube.com/shorts') || url.includes('youtu.be');
-  const isFacebook = url.includes('facebook.com') || url.includes('fb.watch');
+async function resolveTikTokUrl(url) {
+  const cleanUrl = url.split('?')[0];
 
-  // ── tikwm for TikTok (fastest) ────────────────────────────────────────────
-  if (isTikTok) {
-    try {
-      const cleanUrl = url.split('?')[0];
-      const res = await axios.post('https://tikwm.com/api/',
-        new URLSearchParams({ url: cleanUrl, hd: '1' }),
-        { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, timeout: 10000 }
-      );
-      const play = res.data?.data?.hdplay || res.data?.data?.play;
-      if (play) {
-        console.log('[Resolver] tikwm resolved TikTok URL');
-        return { type: 'url', value: play };
-      }
-      console.warn('[Resolver] tikwm returned no URL, falling back to yt-dlp');
-    } catch (err) {
-      console.warn('[Resolver] tikwm failed:', err.message, '— falling back to yt-dlp');
+  // ── tikwm (fast, free) ────────────────────────────────────────────────────
+  try {
+    const res = await axios.post(
+      'https://tikwm.com/api/',
+      new URLSearchParams({ url: cleanUrl, hd: '1' }),
+      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, timeout: 15000 },
+    );
+    const play = res.data?.data?.hdplay || res.data?.data?.play;
+    if (play) {
+      console.log('[Resolver] tikwm resolved TikTok URL');
+      return { type: 'url', value: play };
     }
+    console.warn('[Resolver] tikwm returned no URL');
+  } catch (err) {
+    console.warn('[Resolver] tikwm failed:', err.message);
   }
 
-  // ── yt-dlp fallback for all platforms ─────────────────────────────────────
-  // Downloads directly to videoPath and returns the file path
+  // ── tiklydown fallback (no yt-dlp needed) ─────────────────────────────────
   try {
-    await new Promise((resolve, reject) => {
-      execFile(YTDLP_PATH, [
-        url,
-        '--output', videoPath,
-        '--format', 'mp4/best[ext=mp4]/best',
-        '--no-playlist',
-        '--socket-timeout', '30',
-        '--retries', '3',
-        '-q', // quiet
-      ], { timeout: 120000 }, (err, stdout, stderr) => {
-        if (err) reject(new Error(`yt-dlp failed: ${stderr || err.message}`));
-        else resolve();
-      });
+    const res = await axios.get('https://api.tiklydown.eu.org/api/download', {
+      params: { url: cleanUrl },
+      timeout: 15000,
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Eixora/1.0)' },
     });
-    console.log('[Resolver] yt-dlp downloaded video successfully');
-    return { type: 'file', value: videoPath };
+    const play =
+      res.data?.video?.noWatermark
+      || res.data?.video?.downloadAddr
+      || res.data?.video?.play
+      || res.data?.play;
+    if (play) {
+      console.log('[Resolver] tiklydown resolved TikTok URL');
+      return { type: 'url', value: play };
+    }
+    console.warn('[Resolver] tiklydown returned no URL');
+  } catch (err) {
+    console.warn('[Resolver] tiklydown failed:', err.message);
+  }
+
+  return null;
+}
+
+async function runYtdlp(url, videoPath) {
+  const ytdlpPath = resolveYtdlpPath();
+  await new Promise((resolve, reject) => {
+    execFile(ytdlpPath, [
+      url,
+      '--output', videoPath,
+      '--format', 'mp4/best[ext=mp4]/best',
+      '--no-playlist',
+      '--socket-timeout', '30',
+      '--retries', '3',
+      '-q',
+    ], { timeout: 120000 }, (err, stdout, stderr) => {
+      if (err) {
+        const msg = stderr || err.message || String(err);
+        if (/ENOENT|not found/i.test(msg)) {
+          reject(new Error(
+            'yt-dlp is not installed on the server. Redeploy after postinstall, or set YTDLP_PATH.',
+          ));
+          return;
+        }
+        reject(new Error(`yt-dlp failed: ${msg}`));
+        return;
+      }
+      resolve();
+    });
+  });
+  console.log('[Resolver] yt-dlp downloaded video successfully');
+  return { type: 'file', value: videoPath };
+}
+
+async function resolveVideoUrl(url, videoPath) {
+  const isTikTok = url.includes('tiktok.com');
+
+  if (isTikTok) {
+    const tikTok = await resolveTikTokUrl(url);
+    if (tikTok) return tikTok;
+  }
+
+  try {
+    return await runYtdlp(url, videoPath);
   } catch (err) {
     throw new Error(`All resolvers failed for ${url}: ${err.message}`);
   }

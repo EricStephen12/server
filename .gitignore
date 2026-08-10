@@ -2,4 +2,6 @@ node_modules/
 .env
 temp/
 uploads/
+bin/
+yt-dlp.exe
 *.log

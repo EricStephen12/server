@@ -440,6 +440,13 @@ try {
     }
   }
 
+  try {
+    const { ytdlpReady } = require('./utils/ytdlpPath');
+    report.ytdlp = ytdlpReady();
+  } catch (e) {
+    report.ytdlp = { ready: false, error: e.message };
+  }
+
 try {
     const testFile = '/tmp/debug_test.txt';
     fs.writeFileSync(testFile, 'test');

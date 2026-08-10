@@ -60,9 +60,8 @@ async function processAnalysisJob(data) {
           const path = require('path');
           const crypto = require('crypto');
           const { execFile } = require('child_process');
-          const YTDLP_PATH = process.platform === 'win32'
-            ? path.join(__dirname, '../yt-dlp.exe')
-            : 'yt-dlp';
+          const { resolveYtdlpPath } = require('./ytdlpPath');
+          const YTDLP_PATH = resolveYtdlpPath();
           const tmpAudioPath = path.join(__dirname, '../uploads/tmp', `audio_${crypto.randomBytes(6).toString('hex')}.mp3`);
 
           console.log('[Worker] Downloading audio-only for product intel transcription...');
