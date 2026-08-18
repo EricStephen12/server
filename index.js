@@ -107,28 +107,29 @@ app.use(cors({
 app.use(helmet());
 app.use(cookieParser());
 
-// Global limiter — 150 req per 15 min per IP
+// Global limiter — 300 req per 15 min per IP
+// Exponential backoff on the client means polling routes stay well under this
 const globalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 150,
+  max: 300,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many requests, slow down.' }
 });
 
-// Strict limiter for expensive AI routes — 20 req per 15 min per IP
+// Scan limiter — 30 AI scan submits per hour per IP
 const scanLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 20,
+  windowMs: 60 * 60 * 1000,
+  max: 30,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many scan requests. Please wait before trying again.' }
 });
 
-// Auth/registration limiter — 10 attempts per 15 min per IP
+// Auth/registration limiter — 20 attempts per 15 min per IP
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 10,
+  max: 20,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many auth attempts. Please wait.' }
