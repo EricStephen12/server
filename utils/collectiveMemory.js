@@ -28,7 +28,6 @@ function normalizeNiche(raw) {
 
 function normalizeMode(dna) {
   if (dna?.mode === 'product-intel') return 'product-intel';
-  if (dna?.mode === 'content' || dna?.mode === 'storytelling') return 'content';
   return 'ad';
 }
 

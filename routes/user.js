@@ -76,6 +76,9 @@ router.get('/me', async (req, res) => {
         onboarding_completed as "onboardingCompleted",
         brand_niche as "brandNiche",
         primary_goal as "primaryGoal",
+        brand_style as "brandStyle",
+        brand_positioning as "brandPositioning",
+        brand_stage as "brandStage",
         created_at as "createdAt"
       FROM users
       WHERE id = ${userId}
@@ -157,7 +160,7 @@ router.patch('/me', async (req, res) => {
     return res.status(401).json({ error: 'Unauthorized: invalid token' });
   }
 
-  let { userId, name, email, onboarding_completed, brand_niche, primary_goal, source } = req.body;
+  let { userId, name, email, onboarding_completed, brand_niche, primary_goal, brand_style, brand_positioning, brand_stage, source } = req.body;
   if (!userId) return res.status(400).json({ error: 'User ID required' });
 
   userId = await resolveInternalId(userId, { email, name });
@@ -171,6 +174,9 @@ router.patch('/me', async (req, res) => {
         onboarding_completed = COALESCE(${onboarding_completed !== undefined ? onboarding_completed : sql`onboarding_completed`}, onboarding_completed),
         brand_niche = COALESCE(${brand_niche !== undefined ? brand_niche : sql`brand_niche`}, brand_niche),
         primary_goal = COALESCE(${primary_goal !== undefined ? primary_goal : sql`primary_goal`}, primary_goal),
+        brand_style = COALESCE(${brand_style !== undefined ? brand_style : sql`brand_style`}, brand_style),
+        brand_positioning = COALESCE(${brand_positioning !== undefined ? brand_positioning : sql`brand_positioning`}, brand_positioning),
+        brand_stage = COALESCE(${brand_stage !== undefined ? brand_stage : sql`brand_stage`}, brand_stage),
         source = COALESCE(${source !== undefined ? source : sql`source`}, source)
       WHERE id = ${userId}
       RETURNING 
@@ -182,6 +188,9 @@ router.patch('/me', async (req, res) => {
         onboarding_completed as "onboardingCompleted", 
         brand_niche as "brandNiche", 
         primary_goal as "primaryGoal", 
+        brand_style as "brandStyle",
+        brand_positioning as "brandPositioning",
+        brand_stage as "brandStage",
         source
     `;
 
@@ -194,7 +203,10 @@ router.patch('/me', async (req, res) => {
       subscription_tier: tier,
       onboarding_completed: updatedUser.onboardingCompleted,
       brand_niche: updatedUser.brandNiche,
-      primary_goal: updatedUser.primaryGoal
+      primary_goal: updatedUser.primaryGoal,
+      brand_style: updatedUser.brandStyle,
+      brand_positioning: updatedUser.brandPositioning,
+      brand_stage: updatedUser.brandStage
     });
   } catch (err) {
     console.error("Failed to update profile:", err);

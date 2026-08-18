@@ -92,9 +92,31 @@ async function processAnalysisJob(data) {
         }
       }
 
-      analysis = await generateProductIntel(frames, originalUrl, plan || 'free', transcript);
+      // Fetch user personalization profile from onboarding
+      let userProfile = null;
+      if (userId) {
+        try {
+          const [u] = await sql`SELECT brand_stage, brand_positioning, brand_niche, brand_style, primary_goal FROM users WHERE id = ${userId}`;
+          if (u) userProfile = u;
+        } catch (uErr) {
+          console.warn('[Worker] User profile query failed (non-fatal):', uErr.message);
+        }
+      }
+
+      analysis = await generateProductIntel(frames, originalUrl, plan || 'free', transcript, userProfile);
     } else {
-      analysis = await analyzeVideoFrames(frames, 'Mobile Analysis', '', null, mode || 'ad', plan || 'free');
+      // Fetch user personalization profile from onboarding
+      let userProfile = null;
+      if (userId) {
+        try {
+          const [u] = await sql`SELECT brand_stage, brand_positioning, brand_niche, brand_style, primary_goal FROM users WHERE id = ${userId}`;
+          if (u) userProfile = u;
+        } catch (uErr) {
+          console.warn('[Worker] User profile query failed (non-fatal):', uErr.message);
+        }
+      }
+
+      analysis = await analyzeVideoFrames(frames, 'Mobile Analysis', '', null, mode || 'ad', plan || 'free', userProfile);
     }
     
     // Update all-time total counter (scan_events is already inserted upfront to prevent race conditions)

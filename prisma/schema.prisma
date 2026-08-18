@@ -29,6 +29,9 @@ model User {
   onboardingCompleted                             Boolean?          @default(false) @map("onboarding_completed")
   brandNiche                                      String?           @map("brand_niche")
   primaryGoal                                     String?           @map("primary_goal")
+  brandStyle                                      String?           @map("brand_style")
+  brandPositioning                                String?           @map("brand_positioning")
+  brandStage                                      String?           @map("brand_stage")
   source                                          String?
   accounts                                        Account[]
   payments                                        payments[]

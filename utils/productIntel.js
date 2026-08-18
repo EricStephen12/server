@@ -156,7 +156,7 @@ async function performMarketResearch(productData) {
 }
 
 // Final pipeline function
-async function generateProductIntel(frames, originalUrl, plan = 'free', transcript = '') {
+async function generateProductIntel(frames, originalUrl, plan = 'free', transcript = '', userProfile = null) {
     console.log('[Product Intel] Step 1: Identifying Product...');
     const productData = await identifyProduct(frames, plan, transcript);
     console.log('[Product Intel] Product Identified:', productData.productName);
@@ -171,7 +171,11 @@ async function generateProductIntel(frames, originalUrl, plan = 'free', transcri
       ? `\n\n- Audio Transcript (what is SPOKEN in the video): "${transcript}"\n  NOTE: The transcript often contains the actual product name, brand, price claims, and target customer language. Prioritize this over visual inference when there is any ambiguity.`
       : '';
     
-    const systemPrompt = `You are the most expensive product sourcing consultant in ecommerce. You charge $5,000 for a single product evaluation. Serious dropshippers and brand owners pay because you tell them the truth before they waste money on inventory and ads — not what they want to hear.
+    const userSection = userProfile
+      ? `\n\n- User Brand Profile: Brand Stage: ${userProfile.brand_stage || 'DTC Operator'}, Aesthetic/Positioning: ${userProfile.brand_positioning || 'Clean Modern DTC'}, Production: ${userProfile.brand_style || 'UGC'}, Niche: ${userProfile.brand_niche || 'General'}, Focus: ${userProfile.primary_goal || 'Saturation Reads'}`
+      : '';
+    
+    const systemPrompt = `You are the most expensive product sourcing consultant in ecommerce. You charge $5,000 for a single product evaluation. Serious brand founders and DTC operators pay because you tell them the truth before they waste money on inventory and ads — not what they want to hear.
 
 VOICE: Write like you're on a call with someone about to wire $10,000 into inventory for this product, and you owe them total honesty, not encouragement. You have seen a thousand products rise and die. You are not impressed easily. If the product is weak, say so plainly and explain exactly why.
 
@@ -182,42 +186,45 @@ YOU ARE EVALUATING A PRODUCT shown in a video, combined with real market researc
 INPUTS PROVIDED:
 - Web search results covering: competitor/seller saturation, search trend direction, price range across sellers, any available review sentiment
 - Original Product Data: ${JSON.stringify(productData)}
-- Market Research Data: ${marketResearch}${transcriptSection}
+- Market Research Data: ${marketResearch}${transcriptSection}${userSection}
 
-YOUR ANALYSIS MUST BE HYPER-SPECIFIC. Reference exact data points from the search results — actual numbers, actual competitor counts, actual trend directions. Never state a saturation or trend claim without citing what specifically supports it.
-
-ACCURACY CHECK: If the search results are thin or inconclusive on a specific point, say so explicitly rather than inventing certainty. A false confident claim is worse than an honest 'the data here is limited, proceed carefully.'
+ACCURACY & QUALITATIVE SIGNALS:
+- Do NOT fabricate or invent precise numeric competitor counts (e.g. do not invent "14 active ads in last 30 days" unless explicitly provided by search data).
+- Use qualitative saturation signals based on pattern analysis:
+  • "Low competitive signal"
+  • "Moderate competitive signal"
+  • "High competitive signal — consider a different angle"
+- Include angle gap analysis: identify where generic angles are saturated vs. where untapped opportunity angles remain.
 
 CRITICAL RULES:
-- Every claim must trace back to specific data provided (frames or search results) — never generic ecommerce advice
-- Take a real position — 'proceed' or 'walk away,' not both-sides hedging
-- If the data doesn't support confidence, say that clearly rather than performing certainty
-- This should read like someone who has personally lost money on bad products before and refuses to let the client repeat that mistake
-
-THE TEST: If a user reads only 'The Verdict' and 'The Bottom Line,' would they know clearly whether to spend money on this product or not? If it's still ambiguous, sharpen it.
+- Every claim must trace back to specific data provided (frames or search results)
+- Take a clear position — 'proceed', 'proceed on alternative angle', or 'walk away'
+- This should read like an expert who protects the client from wasting money on dead product angles
 
 Output as JSON ONLY matching this EXACT structure:
 {
   "productName": "${productData.productName}",
   "category": "${productData.category}",
   "marketStage": "<Emerging | Growing | Peak | Saturated | Declining>",
+  "competitiveSignal": "<Low competitive signal | Moderate competitive signal | High competitive signal — consider a different angle>",
   "saturationScore": <1-10 with 0.1 precision>,
   "audiencePainFitScore": <1-10 with 0.1 precision>,
   "profitViabilityScore": <1-10 with 0.1 precision>,
-  "verdict": "<One sentence, under 15 words, stating clearly: sell this now, sell this cautiously, or walk away. No hedging>",
-  "marketPosition": "<Where exactly this product sits right now — cite specific trend/search data found>",
-  "saturationReality": "<Actual number of competing sellers/ads found in research, and what that density means practically>",
-  "audienceAndPainPoint": "<Who buys this and why — referenced against frames and research>",
-  "authenticityCheck": "<Does this look like a genuine solution or a gimmick/fad?>",
-  "moneyRisk": "<The single biggest reason this product could fail commercially — name the ONE most likely failure mode>",
+  "verdict": "<One sentence stating clearly: sell this now, test this on alternative angle, or walk away>",
+  "angleGapOpportunity": "<Specific angle or positioning gap where opportunity remains vs generic saturated angle>",
+  "marketPosition": "<Where this product sits in the current market cycle>",
+  "saturationReality": "<Qualitative saturation assessment explaining the competitor density and angle viability>",
+  "audienceAndPainPoint": "<Who buys this and the core pain point addressed>",
+  "authenticityCheck": "<Genuine problem-solver vs short-term gimmick analysis>",
+  "moneyRisk": "<The single biggest commercial failure risk to mitigate>",
   "actionableSteps": [
     "<specific action 1>",
     "<specific action 2>",
     "<specific action 3>"
   ],
   "bottomLine": {
-    "truth": "<single blunt sentence under 10 words stating the core truth>",
-    "watchFor": "<what specifically to watch for over the next 30-60 days that would change this verdict>"
+    "truth": "<single blunt sentence stating the core truth>",
+    "watchFor": "<key signal to monitor over next 30-60 days>"
   }
 }`;
 

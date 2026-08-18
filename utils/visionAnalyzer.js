@@ -8,14 +8,14 @@ const VISION_MODELS = {
   free:    'qwen/qwen3-vl-32b-instruct',  // Fallback
 };
 
-async function analyzeVideoFrames(frames, productContext = '', transcript = '', music = null, mode = 'ad', plan = 'free') {
+async function analyzeVideoFrames(frames, productContext = '', transcript = '', music = null, mode = 'ad', plan = 'free', userProfile = null) {
   if (!process.env.OPENROUTER_API_KEY) {
     throw new Error('OpenRouter API Key is missing for Vision Analysis');
   }
 
   // Pick vision model based on subscription plan
   const visionModel = VISION_MODELS[plan] || VISION_MODELS['free'];
-  console.log(`[Vision] Using model: ${visionModel} for plan: ${plan}`);
+  console.log(`[Vision] Using model: ${visionModel} for plan: ${plan}, profile: ${userProfile ? JSON.stringify(userProfile) : 'none'}`);
 
   // Build the FULL frame map so the AI knows the entire video structure
   const frameMap = frames.map((f, i) => 
@@ -159,6 +159,17 @@ The other frames exist but don't have images — use the timestamps and phase la
 ${transcript ? `EXACT WORDS SPOKEN IN THE VIDEO: "${transcript}"` : 'NO SPOKEN WORDS — this is a visual-only video.'}
 ${music ? `BACKGROUND TRACK IDENTIFIED: ${music}` : 'No identified background music.'}
 ${productContext ? `CONTEXT: ${productContext}` : ''}
+${userProfile ? `
+BRAND & CREATOR PROFILE MATRIX:
+- Brand Stage: ${userProfile.brand_stage || 'DTC Operator'} (Tailor strategic maturity and scale recommendations accordingly)
+- Brand Positioning & Aesthetic: ${userProfile.brand_positioning || 'Clean Modern DTC'} (Ensure the bent script tone matches this brand aesthetic — no cheap gimmickry if high-trust/luxury)
+- Target Market / Vertical: ${userProfile.brand_niche || 'General E-commerce'}
+- Physical Production Setup: ${userProfile.brand_style || 'iPhone UGC'} (Format camera directions and visual cues specifically for this filming setup)
+- Primary Strategic Goal: ${userProfile.primary_goal || 'Niche Bending & 0-3s Thumb-Stop'}
+
+NICHE-BENDING INSTRUCTION:
+In your "niche_bending_strategy", provide a ready-to-shoot 0-3s hook script and camera direction bent specifically for their ${userProfile.brand_positioning || 'DTC'} brand in the ${userProfile.brand_niche || 'target'} vertical, filming on ${userProfile.brand_style || 'their camera setup'}.
+` : ''}
 
 YOUR ANALYSIS MUST BE HYPER-SPECIFIC. Reference exact frame numbers and timestamps.
 Do NOT give generic advice. Every critique must reference what you SEE in the frames.
@@ -210,6 +221,11 @@ Output as JSON with this EXACT structure (maintaining backward compatibility key
     "<specific, filmable instruction 3>"
   ],
   "the_secret_sauce": "<deliver the single most important, non-obvious insight about why this specific video works, written with personality and conviction>",
+  "niche_bending_strategy": {
+    "core_mechanic": "<The underlying psychological mechanic that made this format go viral>",
+    "bended_angle_script": "<The ready-to-shoot 0-3s hook script bent into a fresh non-saturated angle>",
+    "direction": "<Exact filmable instructions on how to shoot this without copying>"
+  },
   "hook_analysis": {
     "critique": "<duplicate of the_secret_sauce for backward compatibility>",
     "visual_description": "<visual hooks description of the opening scenes>",
