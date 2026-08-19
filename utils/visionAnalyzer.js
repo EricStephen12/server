@@ -139,6 +139,18 @@ THE "WORTH MORE THAN THIS COSTS" TEST: Before finalizing, ask yourself: if the c
 FINAL SELF-EDIT PASS: Before finalizing, reread the Big Idea and Secret Sauce sections. If either sounds like it could've been written by a consultant instead of a person with actual taste, rewrite it once more before outputting.
 `;
 
+  // Normalize userProfile fields with aliases (handles snake_case, camelCase, and brief aliases)
+  const brandNiche = userProfile?.brand_niche || userProfile?.brandNiche || userProfile?.niche || 'General E-commerce';
+  const brandPositioning = userProfile?.brand_positioning || userProfile?.brandPositioning || userProfile?.positioning || userProfile?.tone || userProfile?.visual_style || 'Clean Modern DTC';
+  const brandStyle = userProfile?.brand_style || userProfile?.brandStyle || userProfile?.camera_setup || userProfile?.visual_style || 'iPhone UGC';
+  const brandStage = userProfile?.brand_stage || userProfile?.brandStage || userProfile?.stage || 'DTC Operator';
+  const primaryGoal = userProfile?.primary_goal || userProfile?.primaryGoal || userProfile?.goal || 'Niche Bending & 0-3s Thumb-Stop';
+
+  console.log('[VisionAnalyzer] USERPROFILE DEBUG:', JSON.stringify({
+    raw: userProfile,
+    normalized: { brandNiche, brandPositioning, brandStyle, brandStage, primaryGoal }
+  }, null, 2));
+
   const messages = [
     {
       role: 'user',
@@ -161,14 +173,28 @@ ${music ? `BACKGROUND TRACK IDENTIFIED: ${music}` : 'No identified background mu
 ${productContext ? `CONTEXT: ${productContext}` : ''}
 ${userProfile ? `
 BRAND & CREATOR PROFILE MATRIX:
-- Brand Stage: ${userProfile.brand_stage || 'DTC Operator'} (Tailor strategic maturity and scale recommendations accordingly)
-- Brand Positioning & Aesthetic: ${userProfile.brand_positioning || 'Clean Modern DTC'} (Ensure the bent script tone matches this brand aesthetic — no cheap gimmickry if high-trust/luxury)
-- Target Market / Vertical: ${userProfile.brand_niche || 'General E-commerce'}
-- Physical Production Setup: ${userProfile.brand_style || 'iPhone UGC'} (Format camera directions and visual cues specifically for this filming setup)
-- Primary Strategic Goal: ${userProfile.primary_goal || 'Niche Bending & 0-3s Thumb-Stop'}
+- Brand Stage: ${brandStage}
+- Brand Positioning & Aesthetic: ${brandPositioning}
+- Target Market / Niche: ${brandNiche}
+- Physical Camera Setup: ${brandStyle}
+- Primary Strategic Goal: ${primaryGoal}
 
-NICHE-BENDING INSTRUCTION:
-In your "niche_bending_strategy", provide a ready-to-shoot 0-3s hook script and camera direction bent specifically for their ${userProfile.brand_positioning || 'DTC'} brand in the ${userProfile.brand_niche || 'target'} vertical, filming on ${userProfile.brand_style || 'their camera setup'}.
+CRITICAL 2-STEP NICHE-BENDING INSTRUCTION:
+Do NOT lazily paraphrase or sprinkle buzzwords into the original video's script. You must perform a strict two-step derivation:
+
+STEP 1 (Extract Abstract Mechanic):
+In one sentence, extract the core psychological mechanic of this video, written with ZERO reference to the original product, original brand, or original product category (e.g. "Destructive stress test → instant undeniable proof of relief", NOT "waterproof phone case drop test").
+
+STEP 2 (Complete Re-invention in the Brand's World):
+Using ONLY that abstract mechanic from Step 1, invent a completely new 0–3s hook script and camera direction for a brand in:
+- Niche: ${brandNiche}
+- Positioning/Aesthetic: ${brandPositioning}
+- Camera Setup: ${brandStyle}
+
+HARD RULES:
+1. You must NOT mention, imply, or visually copy the original product or its category.
+2. The visual cue and camera direction must be something this specific creator would actually film with their setup (${brandStyle}).
+3. FAILURE CONDITION: If someone could recognize the original product or video from your bent hook script, YOU HAVE FAILED THIS TASK.
 ` : ''}
 
 YOUR ANALYSIS MUST BE HYPER-SPECIFIC. Reference exact frame numbers and timestamps.
@@ -222,9 +248,9 @@ Output as JSON with this EXACT structure (maintaining backward compatibility key
   ],
   "the_secret_sauce": "<deliver the single most important, non-obvious insight about why this specific video works, written with personality and conviction>",
   "niche_bending_strategy": {
-    "core_mechanic": "<The underlying psychological mechanic that made this format go viral>",
-    "bended_angle_script": "<The ready-to-shoot 0-3s hook script bent into a fresh non-saturated angle>",
-    "direction": "<Exact filmable instructions on how to shoot this without copying>"
+    "core_mechanic": "<STEP 1: The abstract psychological trigger with zero mention of the original product>",
+    "bended_angle_script": "<STEP 2: The completely re-invented 0-3s hook script for the user's niche and tone>",
+    "direction": "<STEP 2 Visual Cue: Exact filmable camera directions for their specific filming setup>"
   },
   "hook_analysis": {
     "critique": "<duplicate of the_secret_sauce for backward compatibility>",

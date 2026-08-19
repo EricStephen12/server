@@ -171,8 +171,20 @@ async function generateProductIntel(frames, originalUrl, plan = 'free', transcri
       ? `\n\n- Audio Transcript (what is SPOKEN in the video): "${transcript}"\n  NOTE: The transcript often contains the actual product name, brand, price claims, and target customer language. Prioritize this over visual inference when there is any ambiguity.`
       : '';
     
+    // Normalize userProfile fields with aliases (handles snake_case, camelCase, and brief aliases)
+    const brandNiche = userProfile?.brand_niche || userProfile?.brandNiche || userProfile?.niche || 'General E-commerce';
+    const brandPositioning = userProfile?.brand_positioning || userProfile?.brandPositioning || userProfile?.positioning || userProfile?.tone || userProfile?.visual_style || 'Clean Modern DTC';
+    const brandStyle = userProfile?.brand_style || userProfile?.brandStyle || userProfile?.camera_setup || userProfile?.visual_style || 'iPhone UGC';
+    const brandStage = userProfile?.brand_stage || userProfile?.brandStage || userProfile?.stage || 'DTC Operator';
+    const primaryGoal = userProfile?.primary_goal || userProfile?.primaryGoal || userProfile?.goal || 'Saturation Reads';
+
+    console.log('[ProductIntel] USERPROFILE DEBUG:', JSON.stringify({
+      raw: userProfile,
+      normalized: { brandNiche, brandPositioning, brandStyle, brandStage, primaryGoal }
+    }, null, 2));
+    
     const userSection = userProfile
-      ? `\n\n- User Brand Profile: Brand Stage: ${userProfile.brand_stage || 'DTC Operator'}, Aesthetic/Positioning: ${userProfile.brand_positioning || 'Clean Modern DTC'}, Production: ${userProfile.brand_style || 'UGC'}, Niche: ${userProfile.brand_niche || 'General'}, Focus: ${userProfile.primary_goal || 'Saturation Reads'}`
+      ? `\n\n- User Brand Profile: Brand Stage: ${brandStage}, Aesthetic/Positioning: ${brandPositioning}, Production: ${brandStyle}, Niche: ${brandNiche}, Focus: ${primaryGoal}`
       : '';
     
     const systemPrompt = `You are the most expensive product sourcing consultant in ecommerce. You charge $5,000 for a single product evaluation. Serious brand founders and DTC operators pay because you tell them the truth before they waste money on inventory and ads — not what they want to hear.
