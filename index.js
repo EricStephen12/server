@@ -693,10 +693,11 @@ const [user] = await sql`SELECT subscription_tier FROM users WHERE id = ${userId
 
 
 app.post('/api/analyze', requireAuth, requireOwnership, scanLimiter, express.json({ limit: '10mb' }), async (req, res) => {
-  let { sourceUrl, userId, mode, niche } = req.body;
+  let { sourceUrl, userId, mode, niche, userEmail, userName } = req.body;
   if (!sourceUrl) return res.status(400).json({ error: 'Video URL required' });
 
-  userId = await resolveInternalId(userId);
+  const rawUserId = userId || req.clerkUserId;
+  userId = await resolveInternalId(rawUserId, { email: userEmail, name: userName });
   if (!userId) return res.status(404).json({ error: 'User resolution failed' });
 
   let plan = 'free';
@@ -776,10 +777,11 @@ app.post('/api/analyze', requireAuth, requireOwnership, scanLimiter, express.jso
 });
 
 app.post('/api/product-intel', requireAuth, requireOwnership, scanLimiter, express.json({ limit: '10mb' }), async (req, res) => {
-  let { sourceUrl, userId } = req.body;
+  let { sourceUrl, userId, userEmail, userName } = req.body;
   if (!sourceUrl) return res.status(400).json({ error: 'Video URL required' });
 
-  userId = await resolveInternalId(userId);
+  const rawUserId = userId || req.clerkUserId;
+  userId = await resolveInternalId(rawUserId, { email: userEmail, name: userName });
   if (!userId) return res.status(404).json({ error: 'User resolution failed' });
 
   let plan = 'free';
@@ -860,7 +862,7 @@ app.post('/api/product-intel', requireAuth, requireOwnership, scanLimiter, expre
 
 // ── Manual Video Upload ──────────────────────────────────────────────────────
 app.post('/api/upload', requireAuth, scanLimiter, upload.single('file'), async (req, res) => {
-  let { userId, mode, niche } = req.body;
+  let { userId, mode, niche, userEmail, userName } = req.body;
   if (!req.file) return res.status(400).json({ error: 'No video file provided' });
 
   // Validate MIME type
@@ -870,7 +872,8 @@ app.post('/api/upload', requireAuth, scanLimiter, upload.single('file'), async (
     return res.status(400).json({ error: 'Only video files are supported' });
   }
 
-  userId = await resolveInternalId(userId);
+  const rawUserId = userId || req.clerkUserId;
+  userId = await resolveInternalId(rawUserId, { email: userEmail, name: userName });
   if (!userId) return res.status(404).json({ error: 'User resolution failed' });
 
   let plan = 'free';
