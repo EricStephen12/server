@@ -321,13 +321,41 @@ Output as JSON with this EXACT structure (maintaining backward compatibility key
 
     // Claude sometimes wraps JSON in markdown blocks
     let cleanedText = responseText.trim();
-    if (cleanedText.startsWith('\`\`\`json')) {
-        cleanedText = cleanedText.replace(/^\`\`\`json/, '').replace(/\`\`\`$/, '').trim();
-    } else if (cleanedText.startsWith('\`\`\`')) {
-        cleanedText = cleanedText.replace(/^\`\`\`/, '').replace(/\`\`\`$/, '').trim();
+    if (cleanedText.startsWith('```json')) {
+        cleanedText = cleanedText.replace(/^```json/, '').replace(/```$/, '').trim();
+    } else if (cleanedText.startsWith('```')) {
+        cleanedText = cleanedText.replace(/^```/, '').replace(/```$/, '').trim();
     }
 
-    return JSON.parse(cleanedText);
+    const analysis = JSON.parse(cleanedText);
+
+    // ── ISOLATED PASS 2: Text-Only Niche Bending Re-invention ────────────────
+    // By passing ONLY the abstract mechanic (with zero frames & zero original product cues),
+    // we physically eliminate multimodal visual attention leakage / literal object anchoring.
+    const coreMechanic = analysis.niche_bending_strategy?.core_mechanic || analysis.the_secret_sauce;
+    if (coreMechanic) {
+      console.log(`[Vision] Running Isolated Pass 2 Niche Bending for vertical: "${brandNiche}", aesthetic: "${brandPositioning}"`);
+      const bentResult = await generateBendedHookScript({
+        coreMechanic,
+        brandNiche,
+        brandPositioning,
+        brandStyle,
+        brandStage,
+        primaryGoal,
+        plan
+      });
+
+      if (bentResult?.bended_angle_script) {
+        if (!analysis.niche_bending_strategy) analysis.niche_bending_strategy = {};
+        analysis.niche_bending_strategy.bended_angle_script = bentResult.bended_angle_script;
+        if (bentResult.direction) {
+          analysis.niche_bending_strategy.direction = bentResult.direction;
+        }
+        console.log('[Vision] Pass 2 Bended Hook generated successfully:', bentResult.bended_angle_script);
+      }
+    }
+
+    return analysis;
 
   } catch (error) {
     console.error('Vision analysis error:', error);
@@ -335,4 +363,88 @@ Output as JSON with this EXACT structure (maintaining backward compatibility key
   }
 }
 
-module.exports = { analyzeVideoFrames };
+/**
+ * Isolated Pass 2: Re-invents the hook script exclusively within the user's target brand world.
+ * Receives ONLY the abstract mechanic as text (ZERO video frames, ZERO original product cues)
+ * to physically prevent visual/literal anchoring and copycat leakage.
+ */
+async function generateBendedHookScript({ coreMechanic, brandNiche, brandPositioning, brandStyle, brandStage, primaryGoal, plan = 'free' }) {
+  if (!process.env.OPENROUTER_API_KEY || !coreMechanic) return null;
+
+  // Use fast, high-reasoning model for pure copywriting pass
+  const textModel = plan === 'studio' ? 'anthropic/claude-3.5-sonnet' : 'meta-llama/llama-3.3-70b-instruct';
+
+  const systemPrompt = `You are an elite creative director and direct-response hook copywriter for modern DTC brands.
+Your sole obsession is translating high-performing viral psychology mechanics into completely original, bespoke hooks for specific brand niches.`;
+
+  const userPrompt = `AN ABSTRACT PSYCHOLOGICAL MECHANIC WAS EXTRACTED FROM A VIRAL VIDEO:
+"${coreMechanic}"
+
+TARGET BRAND PROFILE:
+- Vertical / Industry: ${brandNiche}
+- Aesthetic & Tone: ${brandPositioning}
+- Camera & Filming Setup: ${brandStyle}
+- Brand Stage: ${brandStage}
+- Strategic Goal: ${primaryGoal}
+
+YOUR TASK:
+Invent a completely NEW, original 0–3s hook script and camera direction exclusively for THIS TARGET BRAND (${brandNiche}).
+Deploy the exact same underlying psychological mechanic, but completely situated inside this target brand's universe.
+
+CRITICAL HARD CONSTRAINTS:
+1. The script and visual action MUST be 100% native to ${brandNiche} with the aesthetic of ${brandPositioning}.
+   - If Fashion/Apparel: must be about clothing, fit, styling, fabric, unboxing, or wearing.
+   - If Skincare/Beauty: must be about skin texture, routine, instant glow, or problem-spot application.
+   - If Food/Coffee/Beverage: must be about taste, morning ritual, aroma, or craft.
+   - If Fitness/Health: must be about energy, workout friction, body feel, or routine.
+   - If Tech/Gear: must be specifically about the target brand's gear.
+2. ABSOLUTE ZERO LEAKAGE: You have never seen the source video. NEVER mention mounts, phone grips, security cameras, or unrelated devices unless that is explicitly the target brand's vertical.
+3. The visual cue must be realistic for a creator with a ${brandStyle} setup.
+4. Format: Spoken dialogue inside quotation marks, visual/camera actions inside [brackets].
+
+Output strict JSON only:
+{
+  "bended_angle_script": "The 0-3s spoken hook script with [visual cue in brackets]",
+  "direction": "Specific camera instructions matching ${brandStyle}"
+}`;
+
+  try {
+    const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
+        'Content-Type': 'application/json',
+        'HTTP-Referer': 'https://eixora.com',
+        'X-Title': 'Eixora Niche Bender',
+      },
+      body: JSON.stringify({
+        model: textModel,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt }
+        ],
+        response_format: { type: 'json_object' },
+        temperature: 0.7,
+        max_tokens: 600,
+      })
+    });
+
+    if (!response.ok) return null;
+    const json = await response.json();
+    const content = json.choices?.[0]?.message?.content;
+    if (!content) return null;
+
+    let cleaned = content.trim();
+    if (cleaned.startsWith('```json')) {
+      cleaned = cleaned.replace(/^```json/, '').replace(/```$/, '').trim();
+    } else if (cleaned.startsWith('```')) {
+      cleaned = cleaned.replace(/^```/, '').replace(/```$/, '').trim();
+    }
+    return JSON.parse(cleaned);
+  } catch (err) {
+    console.warn('[NicheBender Pass 2] Failed (non-fatal):', err.message);
+    return null;
+  }
+}
+
+module.exports = { analyzeVideoFrames, generateBendedHookScript };
