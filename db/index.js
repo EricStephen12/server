@@ -1,12 +1,27 @@
 const postgres = require('postgres');
 const dotenv = require('dotenv');
+const path = require('path');
+const fs = require('fs');
 
-dotenv.config();
+// Look for .env in current dir, parent dir, or server dir
+const envPaths = [
+    path.resolve(__dirname, '../.env'),
+    path.resolve(__dirname, '.env'),
+    path.resolve(process.cwd(), 'server/.env'),
+    path.resolve(process.cwd(), '.env'),
+];
+
+for (const envPath of envPaths) {
+    if (fs.existsSync(envPath)) {
+        dotenv.config({ path: envPath });
+        break;
+    }
+}
 
 const connectionString = process.env.DATABASE_URL?.trim();
 
 if (!connectionString) {
-
+    console.error('[DB] CRITICAL: DATABASE_URL environment variable is missing!');
 }
 
 

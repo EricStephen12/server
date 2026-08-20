@@ -3,9 +3,24 @@ const cors = require('cors');
 const cookieParser = require('cookie-parser');
 const dotenv = require('dotenv');
 const path = require('path');
-const Sentry = require('@sentry/node');
+const fs = require('fs');
 
-dotenv.config();
+// Ensure server/.env is loaded regardless of execution cwd
+const envPaths = [
+    path.resolve(__dirname, '.env'),
+    path.resolve(__dirname, '../.env'),
+    path.resolve(process.cwd(), 'server/.env'),
+    path.resolve(process.cwd(), '.env'),
+];
+
+for (const envPath of envPaths) {
+    if (fs.existsSync(envPath)) {
+        dotenv.config({ path: envPath });
+        break;
+    }
+}
+
+const Sentry = require('@sentry/node');
 
 if (process.env.SENTRY_DSN) {
   Sentry.init({
