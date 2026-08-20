@@ -33,6 +33,7 @@ const Groq = require('groq-sdk');
 const multer = require('multer');
 const { analyzeVideoFrames } = require('./utils/visionAnalyzer');
 const { selectSmartFrames } = require('./utils/smartFrameSelector');
+const { createSession, getSession, updateSessionDna, updateSessionMessages } = require('./utils/sessionStore');
 const { sql, testConnection } = require('./db/index');
 const prisma = require('./db/prisma');
 const adminRouter = require('./routes/admin');
@@ -739,13 +740,14 @@ app.post('/api/analyze', requireAuth, requireOwnership, scanLimiter, express.jso
     const originalUrl = sourceUrl || 'Direct Upload';
     const cleanTitle = `Analysis: ${originalUrl.substring(0, 30)}...`;
     
-    // Create new lounge session in "processing" state
-    const tempDna = { status: 'processing' };
-    const [session] = await sql`
-      INSERT INTO lounge_sessions(user_id, title, video_url, dna, messages, created_at, updated_at)
-      VALUES(${userId}, ${cleanTitle}, ${originalUrl}, ${JSON.stringify(tempDna)}, '[]', NOW(), NOW())
-      RETURNING id
-    `;
+    // Create new lounge session in "processing" state (with in-memory fallback)
+    const session = await createSession({
+      userId,
+      title: cleanTitle,
+      videoUrl: originalUrl,
+      dna: { status: 'processing' },
+      messages: []
+    });
 
     // Enqueue the heavy processing to BullMQ worker
     const jobData = {
@@ -823,13 +825,14 @@ app.post('/api/product-intel', requireAuth, requireOwnership, scanLimiter, expre
     const originalUrl = sourceUrl || 'Direct Upload';
     const cleanTitle = `Product Intel: ${originalUrl.substring(0, 30)}...`;
     
-    // Create new lounge session in "processing" state
-    const tempDna = { status: 'processing', mode: 'product-intel' };
-    const [session] = await sql`
-      INSERT INTO lounge_sessions(user_id, title, video_url, dna, messages, created_at, updated_at)
-      VALUES(${userId}, ${cleanTitle}, ${originalUrl}, ${JSON.stringify(tempDna)}, '[]', NOW(), NOW())
-      RETURNING id
-    `;
+    // Create new lounge session in "processing" state (with in-memory fallback)
+    const session = await createSession({
+      userId,
+      title: cleanTitle,
+      videoUrl: originalUrl,
+      dna: { status: 'processing', mode: 'product-intel' },
+      messages: []
+    });
 
     // Enqueue the heavy processing to BullMQ worker
     const jobData = {
@@ -920,11 +923,13 @@ app.post('/api/upload', requireAuth, scanLimiter, upload.single('file'), async (
     const originalFileName = req.file.originalname || 'Uploaded Video';
     const cleanTitle = `Upload: ${originalFileName.substring(0, 40)}`;
 
-    const [session] = await sql`
-      INSERT INTO lounge_sessions(user_id, title, video_url, dna, messages, created_at, updated_at)
-      VALUES(${userId}, ${cleanTitle}, ${'local:' + req.file.path}, ${JSON.stringify({ status: 'processing' })}, '[]', NOW(), NOW())
-      RETURNING id
-    `;
+    const session = await createSession({
+      userId,
+      title: cleanTitle,
+      videoUrl: 'local:' + req.file.path,
+      dna: { status: 'processing' },
+      messages: []
+    });
 
     const jobData = {
       sessionId: session.id,
@@ -1596,43 +1601,23 @@ app.post('/api/save-lounge-session', requireAuth, requireOwnership, async (req, 
 
   const msgCount = Array.isArray(messages) ? messages.length : 0;
 
-try {
-    let result;
+  try {
+    let result = null;
     if (sessionId && sessionId !== 'null' && sessionId !== 'undefined') {
-
-      const [data] = await sql`
-        UPDATE lounge_sessions 
-        SET messages = ${JSON.stringify(messages)}, updated_at = ${new Date()}
-        WHERE id = ${sessionId} AND user_id = ${userId}
-        RETURNING *
-      `;
-      result = data;
-      if (result) {
-
-      } else {
-
-      }
+      result = await updateSessionMessages(sessionId, userId, messages);
     }
 
     if (!result) {
-
       const cleanTitle = title || `Analysis: ${videoUrl ? videoUrl.substring(0, 30) : 'Video'}...`;
-      const [data] = await sql`
-        INSERT INTO lounge_sessions(user_id, title, video_url, dna, messages, created_at, updated_at)
-        VALUES(${userId}, ${cleanTitle}, ${videoUrl}, ${JSON.stringify(dna)}, ${JSON.stringify(messages)}, ${new Date()}, ${new Date()})
-        RETURNING *
-      `;
-      result = data;
+      result = await createSession({
+        userId,
+        title: cleanTitle,
+        videoUrl,
+        dna,
+        messages
+      });
+    }
 
-    }
-    if (result) {
-      if (typeof result.dna === 'string') {
-        try { result.dna = JSON.parse(result.dna); } catch(e){}
-      }
-      if (typeof result.messages === 'string') {
-        try { result.messages = JSON.parse(result.messages); } catch(e){}
-      }
-    }
     res.json(result);
   } catch (error) {
     res.status(500).json({ error: 'Failed to save session' });
@@ -1754,18 +1739,9 @@ await sql`
 app.get('/api/lounge-session/:id', requireAuth, async (req, res) => {
   try {
     const { id: sessionId } = req.params;
-    const [session] = await sql`SELECT * FROM lounge_sessions WHERE id = ${sessionId}`;
+    const session = await getSession(sessionId);
 
     if (!session) return res.status(404).json({ error: 'Session not found' });
-
-    if (session) {
-      if (typeof session.dna === 'string') {
-        try { session.dna = JSON.parse(session.dna); } catch(e){}
-      }
-      if (typeof session.messages === 'string') {
-        try { session.messages = JSON.parse(session.messages); } catch(e){}
-      }
-    }
     res.json(session);
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch session' });

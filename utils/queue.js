@@ -5,6 +5,7 @@ const { generateProductIntel } = require('./productIntel');
 const { extractFramesBackend, extractAudioFromVideo } = require('./videoExtractor');
 const { transcribeAudio } = require('./audioTranscriber');
 const { sql } = require('../db/index');
+const { updateSessionDna } = require('./sessionStore');
 
 let connection = null;
 let analyzeQueue = null;
@@ -161,11 +162,7 @@ async function processAnalysisJob(data) {
       console.warn('[VisualTriggers] attach failed (non-fatal):', trigErr.message);
     }
 
-    await sql`
-        UPDATE lounge_sessions
-        SET dna = ${JSON.stringify(analysis)}, updated_at = NOW()
-        WHERE id = ${sessionId}
-    `;
+    await updateSessionDna(sessionId, analysis);
     console.log(`[Worker] Successfully finished job for session ${sessionId}`);
 
     // Collective Intelligence — anonymized pattern upsert (never fails the user job)
@@ -182,11 +179,7 @@ async function processAnalysisJob(data) {
   } catch(analyzeErr) {
     console.error(`[Worker] Mobile Analysis Error for session ${sessionId}:`, analyzeErr);
     const failedDna = { status: 'failed', error: analyzeErr.message || 'Unknown processing error' };
-    await sql`
-        UPDATE lounge_sessions
-        SET dna = ${JSON.stringify(failedDna)}, updated_at = NOW()
-        WHERE id = ${sessionId}
-    `;
+    await updateSessionDna(sessionId, failedDna);
     throw analyzeErr; // Mark job as failed in BullMQ dashboard
   } finally {
     // Clean up the uploaded file after processing (success or failure)
