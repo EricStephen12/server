@@ -374,14 +374,10 @@ try {
 });
 
 app.post('/api/save-to-vault', requireAuth, requireOwnership, async (req, res) => {
-  let { userId, title, videoUrl, visualDna } = req.body;
-
-  if (!userId || !videoUrl) {
-    return res.status(400).json({ error: 'User ID and Video URL are required' });
-  }
-
-  userId = await resolveInternalId(userId);
-  if (!userId) return res.status(404).json({ error: 'User not found' });
+  let { userId, title, videoUrl, visualDna, userEmail, userName } = req.body;
+  const rawUserId = userId || req.clerkUserId;
+  userId = await resolveInternalId(rawUserId, { email: userEmail, name: userName });
+  if (!userId) return res.status(404).json({ error: 'User resolution failed' });
 
   try {
     const [data] = await sql`
@@ -400,14 +396,10 @@ await sql`UPDATE users SET total_pins = total_pins + 1 WHERE id = ${userId}`;
 });
 
 app.get('/api/user-ads', requireAuth, async (req, res) => {
-  let { userId, search, niche } = req.query;
-
-  if (!userId) {
-    return res.status(400).json({ error: 'User ID is required' });
-  }
-
-  userId = await resolveInternalId(userId);
-  if (!userId) return res.status(404).json({ error: 'User not found' });
+  let { userId, search, niche, email, name } = req.query;
+  const rawUserId = userId || req.clerkUserId;
+  userId = await resolveInternalId(rawUserId, { email, name });
+  if (!userId) return res.status(404).json({ error: 'User resolution failed' });
 
   try {
     let ads;
@@ -533,11 +525,10 @@ async function checkLimits(inputUserId, type) {
 }
 
 app.post('/api/batch-analyze', requireAuth, requireOwnership, scanLimiter, async (req, res) => {
-  let { urls, userId } = req.body;
-  if (!userId) return res.status(400).json({ error: 'User ID required' });
-
-  userId = await resolveInternalId(userId);
-  if (!userId) return res.status(404).json({ error: 'User not found' });
+  let { urls, userId, userEmail, userName } = req.body;
+  const rawUserId = userId || req.clerkUserId;
+  userId = await resolveInternalId(rawUserId, { email: userEmail, name: userName });
+  if (!userId) return res.status(404).json({ error: 'User resolution failed' });
 
   if (!urls || !Array.isArray(urls) || urls.length === 0) {
     return res.status(400).json({ error: 'Please provide an array of URLs' });
@@ -625,11 +616,10 @@ res.json({
 });
 
 app.post('/api/export-report', requireAuth, requireOwnership, async (req, res) => {
-  let { analysis, videoUrl, userId } = req.body;
-  if (!userId) return res.status(400).json({ error: 'User ID required' });
-
-  userId = await resolveInternalId(userId);
-  if (!userId) return res.status(404).json({ error: 'User not found' });
+  let { analysis, videoUrl, userId, userEmail, userName } = req.body;
+  const rawUserId = userId || req.clerkUserId;
+  userId = await resolveInternalId(rawUserId, { email: userEmail, name: userName });
+  if (!userId) return res.status(404).json({ error: 'User resolution failed' });
 
 const [user] = await sql`SELECT subscription_tier FROM users WHERE id = ${userId}`;
   const tier = user?.subscription_tier || 'free';
@@ -954,10 +944,9 @@ app.post('/api/upload', requireAuth, scanLimiter, upload.single('file'), async (
 });
 
 app.post('/api/generate-script', requireAuth, requireOwnership, async (req, res) => {
-  let { productName, description, adId, answers, privateDna, userId } = req.body;
-  if (!userId) return res.status(400).json({ error: 'User ID required' });
-
-  userId = await resolveInternalId(userId);
+  let { productName, description, adId, answers, privateDna, userId, userEmail, userName } = req.body;
+  const rawUserId = userId || req.clerkUserId;
+  userId = await resolveInternalId(rawUserId, { email: userEmail, name: userName });
   if (!userId) return res.status(404).json({ error: 'User resolution failed' });
 
   if (!productName || !description) {
@@ -1285,10 +1274,10 @@ app.get('/api/ads', async (req, res) => {
 });
 
 app.post('/api/script-strategy-questions', requireAuth, requireOwnership, async (req, res) => {
-  let { adId, productName, description, privateDna, userId } = req.body;
+  let { adId, productName, description, privateDna, userId, userEmail, userName } = req.body;
 
-  if (!userId) return res.status(400).json({ error: 'User ID required' });
-  userId = await resolveInternalId(userId);
+  const rawUserId = userId || req.clerkUserId;
+  userId = await resolveInternalId(rawUserId, { email: userEmail, name: userName });
   if (!userId) return res.status(404).json({ error: 'User resolution failed' });
 
   if (!adId && !privateDna) return res.status(400).json({ error: 'Ad ID or Private DNA is required' });
@@ -1361,7 +1350,7 @@ if (adData.analysis && adData.analysis.hook) {
 });
 
 app.post('/api/creative-director-chat', requireAuth, requireOwnership, express.json({ limit: '2mb' }), async (req, res) => {
-  let { messages, dna, isRoastMode, userId, voiceMode, stream } = req.body;
+  let { messages, dna, isRoastMode, userId, voiceMode, stream, userEmail, userName } = req.body;
   voiceMode = !!voiceMode;
   const wantStream = !!stream && voiceMode;
 
@@ -1371,9 +1360,8 @@ app.post('/api/creative-director-chat', requireAuth, requireOwnership, express.j
     dna = dnaRest;
   }
 
-  // groq check removed in favor of openrouter
-
-  userId = await resolveInternalId(userId);
+  const rawUserId = userId || req.clerkUserId;
+  userId = await resolveInternalId(rawUserId, { email: userEmail, name: userName });
   if (!userId) return res.status(404).json({ error: 'User resolution failed' });
 
   let plan = 'free';
@@ -1586,10 +1574,9 @@ app.post('/api/creative-director-chat', requireAuth, requireOwnership, express.j
 });
 
 app.post('/api/save-lounge-session', requireAuth, requireOwnership, async (req, res) => {
-  let { sessionId, videoUrl, dna, messages, title, userId } = req.body;
-  if (!userId) return res.status(400).json({ error: 'User ID required' });
-
-  userId = await resolveInternalId(userId);
+  let { sessionId, videoUrl, dna, messages, title, userId, userEmail, userName } = req.body;
+  const rawUserId = userId || req.clerkUserId;
+  userId = await resolveInternalId(rawUserId, { email: userEmail, name: userName });
   if (!userId) return res.status(404).json({ error: 'User resolution failed' });
 
   const msgCount = Array.isArray(messages) ? messages.length : 0;
@@ -1638,11 +1625,10 @@ try {
 });
 
 app.get('/api/user-sessions', requireAuth, async (req, res) => {
-  let userId = req.query.userId;
-  if (!userId) return res.status(400).json({ error: 'User ID required' });
-
-  userId = await resolveInternalId(userId);
-  if (!userId) return res.status(404).json({ error: 'User not found' });
+  let { userId, email, name } = req.query;
+  const rawUserId = userId || req.clerkUserId;
+  userId = await resolveInternalId(rawUserId, { email, name });
+  if (!userId) return res.status(404).json({ error: 'User resolution failed' });
 
 if (userId === '00000000-0000-0000-0000-000000000000') {
     return res.json([]);
@@ -1675,10 +1661,9 @@ res.json(formattedSessions);
 });
 
 app.post('/api/generate-final-script', requireAuth, requireOwnership, async (req, res) => {
-  let { messages, dna, userId } = req.body;
-  if (!userId) return res.status(400).json({ error: 'User ID required' });
-
-  userId = await resolveInternalId(userId);
+  let { messages, dna, userId, userEmail, userName } = req.body;
+  const rawUserId = userId || req.clerkUserId;
+  userId = await resolveInternalId(rawUserId, { email: userEmail, name: userName });
   if (!userId) return res.status(404).json({ error: 'User resolution failed' });
 
   if (!groq) return res.status(503).json({ error: 'AI service not available' });
@@ -1783,11 +1768,11 @@ app.delete('/api/lounge-session/:id', requireAuth, async (req, res) => {
 });
 
 app.post('/api/generate-hook-variations', requireAuth, requireOwnership, async (req, res) => {
-  let { brief, userId } = req.body;
-  if (!userId) return res.status(400).json({ error: 'User ID required' });
+  let { brief, userId, userEmail, userName } = req.body;
   if (!brief) return res.status(400).json({ error: 'Brief data required' });
 
-  userId = await resolveInternalId(userId);
+  const rawUserId = userId || req.clerkUserId;
+  userId = await resolveInternalId(rawUserId, { email: userEmail, name: userName });
   if (!userId) return res.status(404).json({ error: 'User resolution failed' });
 
   if (!groq) return res.status(503).json({ error: 'AI service not available' });
