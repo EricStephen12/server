@@ -374,10 +374,10 @@ async function generateBendedHookScript({ coreMechanic, brandNiche, brandPositio
   // Use fast, high-reasoning model for pure copywriting pass
   const textModel = plan === 'studio' ? 'anthropic/claude-3.5-sonnet' : 'meta-llama/llama-3.3-70b-instruct';
 
-  const systemPrompt = `You are an elite creative director and direct-response hook copywriter for modern DTC brands.
-Your sole obsession is translating high-performing viral psychology mechanics into completely original, bespoke hooks for specific brand niches.`;
+  const systemPrompt = `You are a legendary direct-response creative director and hook master.
+Your specialty is taking viral psychological tension (fear, high stakes, public humiliation, obsession, secret advantage) and translating it into unskippable, high-converting 0–3s hook scripts for modern brands.`;
 
-  const userPrompt = `AN ABSTRACT PSYCHOLOGICAL MECHANIC WAS EXTRACTED FROM A VIRAL VIDEO:
+  const userPrompt = `AN ABSTRACT PSYCHOLOGICAL MECHANIC WAS EXTRACTED FROM A HIGH-PERFORMING VIRAL VIDEO:
 "${coreMechanic}"
 
 TARGET BRAND PROFILE:
@@ -388,23 +388,32 @@ TARGET BRAND PROFILE:
 - Strategic Goal: ${primaryGoal}
 
 YOUR TASK:
-Invent a completely NEW, original 0–3s hook script and camera direction exclusively for THIS TARGET BRAND (${brandNiche}).
-Deploy the exact same underlying psychological mechanic, but completely situated inside this target brand's universe.
+Invent a completely original 0–3s direct-response hook script and camera direction exclusively for THIS TARGET BRAND (${brandNiche}).
+Translate the core emotional engine into this brand's world while PRESERVING THE RAW TENSION.
 
-CRITICAL HARD CONSTRAINTS:
-1. The script and visual action MUST be 100% native to ${brandNiche} with the aesthetic of ${brandPositioning}.
-   - If Fashion/Apparel: must be about clothing, fit, styling, fabric, unboxing, or wearing.
-   - If Skincare/Beauty: must be about skin texture, routine, instant glow, or problem-spot application.
-   - If Food/Coffee/Beverage: must be about taste, morning ritual, aroma, or craft.
-   - If Fitness/Health: must be about energy, workout friction, body feel, or routine.
-   - If Tech/Gear: must be specifically about the target brand's gear.
-2. ABSOLUTE ZERO LEAKAGE: You have never seen the source video. NEVER mention mounts, phone grips, security cameras, or unrelated devices unless that is explicitly the target brand's vertical.
-3. The visual cue must be realistic for a creator with a ${brandStyle} setup.
-4. Format: Spoken dialogue inside quotation marks, visual/camera actions inside [brackets].
+CRITICAL RULES OF HOOK WRITING:
+1. PRESERVE THE EMOTIONAL STAKES & TENSION LEVEL (MANDATORY):
+   - If the mechanic is about high stakes, urgency, or fear → the hook MUST feel urgent, high-stakes, or adrenaline-fueled for that niche. (e.g. For luxury: "You have 3 seconds before the room judges you" NOT "Wrap yourself in calm serenity").
+   - If the mechanic is about public embarrassment or hidden flaw → make the viewer feel exposed in the first 2 seconds.
+   - If the mechanic is about contrast revelation → give an instant 1-second shocking visual transformation.
+   - BANNED: Never write generic, sleepy, soothing lifestyle fluff ("Embrace the calm", "Discover the beauty", "Wrap yourself in comfort"). Every hook must stop thumbs with friction, stakes, curiosity, or contrast.
+
+2. 100% NATIVE TO THE TARGET NICHE:
+   - If Fashion/Apparel: must be about fit panic, unwritten style codes, silhouette flaws, or looking effortless under pressure.
+   - If Skincare/Beauty: must be about sudden flareups, texture panic, flash transformation, or instant glass-skin proof.
+   - If Food/Coffee/Beverage: must be about bitter crashes, rushed mornings, or sensory shock.
+   - If Fitness/Health: must be about energy crashes, plateau rage, or effortless discipline.
+
+3. ZERO PHYSICAL LEAKAGE:
+   - You have never seen the original video. NEVER mention phone mounts, suction grips, security cameras, or cars unless the target brand actually sells them.
+
+4. FORMAT:
+   - Dialogue/Voiceover inside quotation marks.
+   - Dynamic camera cues inside [brackets] suitable for a ${brandStyle} setup.
 
 Output strict JSON only:
 {
-  "bended_angle_script": "The 0-3s spoken hook script with [visual cue in brackets]",
+  "bended_angle_script": "High-tension 0-3s spoken hook with [fast visual action in brackets]",
   "direction": "Specific camera instructions matching ${brandStyle}"
 }`;
 
