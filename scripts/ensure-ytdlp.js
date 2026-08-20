@@ -9,14 +9,17 @@ const https = require('https');
 const root = path.join(__dirname, '..');
 const binDir = path.join(root, 'bin');
 const isWin = process.platform === 'win32';
+const isMac = process.platform === 'darwin';
 const dest = path.join(binDir, isWin ? 'yt-dlp.exe' : 'yt-dlp');
 const releaseUrl = isWin
   ? 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe'
-  : 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp';
+  : isMac
+  ? 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos'
+  : 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux';
 
 function isValidBinary(filePath) {
   try {
-    return fs.existsSync(filePath) && fs.statSync(filePath).size > 100_000;
+    return fs.existsSync(filePath) && fs.statSync(filePath).size > 10_000_000;
   } catch {
     return false;
   }
