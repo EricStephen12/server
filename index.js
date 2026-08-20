@@ -52,8 +52,6 @@ const { getCachedAnalysis, setCachedAnalysis, getCacheStats } = require('./utils
 const { analyzeQueue, processAnalysisJob } = require('./utils/queue');
 const { sendUpgradeNudgeEmail } = require('./utils/emails');
 const { transcribeAudio } = require('./utils/audioTranscriber');
-const fs = require('fs');
-
 
 process.on('unhandledRejection', (reason, promise) => {
     console.error('Unhandled Rejection at:', promise, 'reason:', reason);
@@ -768,10 +766,15 @@ app.post('/api/analyze', requireAuth, requireOwnership, scanLimiter, express.jso
     }
 
     try {
-      await analyzeQueue.add('analyze-video', jobData);
+      if (analyzeQueue) {
+        await analyzeQueue.add('analyze-video', jobData);
+      } else {
+        processAnalysisJob(jobData).catch(err => {
+          console.error('[Fallback] Background analysis failed:', err);
+        });
+      }
     } catch (queueErr) {
       console.warn('[Queue] BullMQ failed (likely Redis limit exceeded). Falling back to background promise:', queueErr.message);
-      // Fallback: run it in the background manually
       processAnalysisJob(jobData).catch(err => {
         console.error('[Fallback] Background analysis failed:', err);
       });
@@ -853,10 +856,15 @@ app.post('/api/product-intel', requireAuth, requireOwnership, scanLimiter, expre
     }
 
     try {
-      await analyzeQueue.add('analyze-video', jobData);
+      if (analyzeQueue) {
+        await analyzeQueue.add('analyze-video', jobData);
+      } else {
+        processAnalysisJob(jobData).catch(err => {
+          console.error('[Fallback] Background analysis failed:', err);
+        });
+      }
     } catch (queueErr) {
       console.warn('[Queue] BullMQ failed (likely Redis limit exceeded). Falling back to background promise:', queueErr.message);
-      // Fallback: run it in the background manually
       processAnalysisJob(jobData).catch(err => {
         console.error('[Fallback] Background analysis failed:', err);
       });
@@ -949,7 +957,13 @@ app.post('/api/upload', requireAuth, scanLimiter, upload.single('file'), async (
     }
 
     try {
-      await analyzeQueue.add('analyze-video', jobData);
+      if (analyzeQueue) {
+        await analyzeQueue.add('analyze-video', jobData);
+      } else {
+        processAnalysisJob(jobData).catch(err => {
+          console.error('[Fallback] Upload analysis failed:', err);
+        });
+      }
     } catch (queueErr) {
       console.warn('[Queue] BullMQ failed for upload, falling back:', queueErr.message);
       processAnalysisJob(jobData).catch(err => {
